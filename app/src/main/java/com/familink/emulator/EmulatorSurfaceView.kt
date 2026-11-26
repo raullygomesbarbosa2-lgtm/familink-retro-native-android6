@@ -35,6 +35,8 @@ class EmulatorSurfaceView(context: Context) : View(context) {
     @Volatile var p2AnalogX: Float = 0f
     @Volatile var p2AnalogY: Float = 0f
     @Volatile var targetFps: Int = 60
+    @Volatile var framePublisher: ((Bitmap) -> Unit)? = null
+    @Volatile var audioPublisher: ((ShortArray, Int, Int) -> Unit)? = null
 
     init { setBackgroundColor(Color.BLACK); isFocusable = true }
 
@@ -49,6 +51,7 @@ class EmulatorSurfaceView(context: Context) : View(context) {
         var track: AudioTrack? = null
         try {
             Process.setThreadPriority(Process.THREAD_PRIORITY_DISPLAY)
+            val coreSampleRate = NativeCoreBridge.nativeGetAudioSampleRate().coerceIn(8000, 192000)
             // Audio setup is optional: a legacy device's AudioTrack failure must never stop video rendering.
             track = try {
                 val sampleRate = NativeCoreBridge.nativeGetAudioSampleRate().coerceIn(8000, 192000)
@@ -76,11 +79,13 @@ class EmulatorSurfaceView(context: Context) : View(context) {
                             frameBitmap = bitmap
                         }
                         bitmap!!.setPixels(pixels, 0, width, 0, 0, width, height)
+                        framePublisher?.invoke(bitmap!!)
                     }
                     postInvalidateOnAnimation()
                 }
                 // Feed native core audio without allowing an AudioTrack write to stall video frames.
                 val incoming = NativeCoreBridge.nativeReadAudio(audio).coerceIn(0, audio.size)
+                if (incoming > 0) audioPublisher?.invoke(audio, incoming, coreSampleRate)
                 if (track != null && incoming > 0) {
                     if (pendingCount + incoming > pendingAudio.size) {
                         val drop = pendingCount + incoming - pendingAudio.size

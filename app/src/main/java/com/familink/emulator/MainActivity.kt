@@ -185,13 +185,42 @@ class MainActivity : ComponentActivity() {
         var pickerOrigin by remember { mutableStateOf("Jogar") }
         var roomCode by remember { mutableStateOf("") }
         var roomInfo by remember { mutableStateOf<Map<String, Any>?>(null) }
+        var gameStream by remember { mutableStateOf<GameStreamSession?>(null) }
+        var streamViewRef by remember { mutableStateOf<GameStreamView?>(null) }
+        var streamStatus by remember { mutableStateOf("Aguardando conexão P2P") }
+        var remoteGuest by remember { mutableStateOf(false) }
         var roomError by remember { mutableStateOf("") }
         var busy by remember { mutableStateOf(false) }
         val btDevices by btNamesState
 
-        LaunchedEffect(roomInfo?.get("guestAccessStatus"), roomCode, tab, rom) {
-            if (tab == "Online" && roomCode.isNotBlank() && rom != null && roomInfo?.get("guestAccessStatus") == "approved") {
+        LaunchedEffect(roomInfo?.get("guestAccessStatus"), roomInfo?.get("guestUid"), roomCode, user?.uid, rom) {
+            val approved = roomInfo?.get("guestAccessStatus") == "approved"
+            val host = roomInfo?.get("hostUid") as? String
+            val guest = roomInfo?.get("guestUid") as? String
+            remoteGuest = approved && guest == user?.uid && host != user?.uid
+            if (approved && roomCode.isNotBlank() && (rom != null || remoteGuest)) {
                 requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
+            } else if (!approved && remoteGuest) {
+                requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+            }
+        }
+
+        DisposableEffect(roomCode, user?.uid, roomInfo?.get("hostUid"), roomInfo?.get("guestUid"), rom?.fileName) {
+            val currentUser = user?.uid
+            val hostUid = roomInfo?.get("hostUid") as? String
+            val guestUid = roomInfo?.get("guestUid") as? String
+            val shouldHostStream = currentUser != null && currentUser == hostUid && !guestUid.isNullOrBlank() && rom != null
+            val shouldReceive = currentUser != null && currentUser == guestUid && currentUser != hostUid
+            if (roomCode.isNotBlank() && (shouldHostStream || shouldReceive)) {
+                val session = GameStreamSession(ctx, db, roomCode, shouldHostStream,
+                    onPacket = { kind, payload, rate -> runOnUiThread { streamViewRef?.accept(kind, payload, rate) } },
+                    onState = { msg -> runOnUiThread { streamStatus = msg } })
+                gameStream = session
+                if (shouldHostStream) session.startHost()
+                onDispose { session.close(); if (gameStream === session) gameStream = null }
+            } else {
+                gameStream = null
+                onDispose { }
             }
         }
 
@@ -261,14 +290,26 @@ class MainActivity : ComponentActivity() {
         }
 
         MaterialTheme(colorScheme = darkColorScheme(primary = Accent, background = Bg, surface = Panel)) {
-            if (rom != null && isLandscape) {
+            if (((rom != null) || remoteGuest) && isLandscape) {
                 Box(Modifier.fillMaxSize().background(Color.Black)) {
-                    AndroidView(factory = { c -> EmulatorSurfaceView(c).also { it.targetFps = targetFps; surfaceRef = it } }, update = { it.targetFps = targetFps }, modifier = Modifier.fillMaxSize())
+                    if (remoteGuest) {
+                        AndroidView(factory = { c -> GameStreamView(c).also { streamViewRef = it } }, update = { streamViewRef = it; it.statusText = streamStatus }, modifier = Modifier.fillMaxSize())
+                    } else {
+                        AndroidView(factory = { c -> EmulatorSurfaceView(c).also { view ->
+                            view.targetFps = targetFps; surfaceRef = view
+                            view.framePublisher = { bitmap -> if (roomInfo?.get("guestAccessStatus") == "approved") gameStream?.publishFrame(bitmap) }
+                            view.audioPublisher = { pcm, count, rate -> if (roomInfo?.get("guestAccessStatus") == "approved") gameStream?.publishAudio(pcm, count, rate) }
+                        } }, update = { view ->
+                            view.targetFps = targetFps
+                            view.framePublisher = { bitmap -> if (roomInfo?.get("guestAccessStatus") == "approved") gameStream?.publishFrame(bitmap) }
+                            view.audioPublisher = { pcm, count, rate -> if (roomInfo?.get("guestAccessStatus") == "approved") gameStream?.publishAudio(pcm, count, rate) }
+                        }, modifier = Modifier.fillMaxSize())
+                    }
                     Row(Modifier.align(Alignment.TopStart).padding(start=8.dp,top=4.dp), verticalAlignment=Alignment.CenterVertically) {
-                        Text(status, color=Color.White.copy(alpha=0.82f), fontSize=10.sp, modifier=Modifier.background(Color.Black.copy(alpha=0.28f),RoundedCornerShape(6.dp)).padding(horizontal=6.dp,vertical=3.dp), maxLines=1)
+                        Text(if (remoteGuest) "P2 · $streamStatus" else "$status · $streamStatus", color=Color.White.copy(alpha=0.82f), fontSize=10.sp, modifier=Modifier.background(Color.Black.copy(alpha=0.28f),RoundedCornerShape(6.dp)).padding(horizontal=6.dp,vertical=3.dp), maxLines=1)
                         TextButton(onClick={ requestedOrientation=ActivityInfo.SCREEN_ORIENTATION_PORTRAIT }, modifier=Modifier.padding(start=4.dp), colors=ButtonDefaults.textButtonColors(containerColor=Color.Black.copy(alpha=0.22f))) { Text("Voltar",color=Color.White,fontSize=10.sp) }
                     }
-                    Row(Modifier.align(Alignment.BottomCenter).fillMaxWidth().padding(horizontal=14.dp,vertical=8.dp), horizontalArrangement=Arrangement.SpaceBetween, verticalAlignment=Alignment.Bottom) {
+                    if (!remoteGuest) Row(Modifier.align(Alignment.BottomCenter).fillMaxWidth().padding(horizontal=14.dp,vertical=8.dp), horizontalArrangement=Arrangement.SpaceBetween, verticalAlignment=Alignment.Bottom) {
                         AnalogStick(onMove={x,y->updateAnalog(x,y)})
                         Row(horizontalArrangement=Arrangement.spacedBy(5.dp), verticalAlignment=Alignment.CenterVertically) { PadButton("SEL",2,buttonSize=54.dp){b,d->updateTouchBit(b,d)}; PadButton("STR",3,buttonSize=54.dp){b,d->updateTouchBit(b,d)} }
                         Column(horizontalAlignment=Alignment.CenterHorizontally) {
@@ -372,7 +413,7 @@ class MainActivity : ComponentActivity() {
                             Text(if (rom == null) "Escolher ROM neste aparelho" else "Trocar ROM (${rom?.fileName})", maxLines = 1, fontSize = 12.sp)
                         }
                         if (rom != null) Text("ROM carregada neste aparelho: ${rom?.fileName} · ${rom?.region}", color = Color(0xFF34D399), fontSize = 11.sp, modifier = Modifier.padding(top=7.dp))
-                        if (tab == "Online") Text("Nos dois aparelhos, carregue a mesma ROM; a sala confere o arquivo e a região.", color = Muted, fontSize = 11.sp, modifier = Modifier.padding(top=7.dp))
+                        if (tab == "Online") Text("Só P1 precisa carregar a ROM. P2 recebe apenas o vídeo e o áudio do jogo; a tela do Android e as notificações não são transmitidas.", color = Muted, fontSize = 11.sp, modifier = Modifier.padding(top=7.dp))
                         if (tab == "Local") {
                             Button(onClick = { if (rom == null) roomError = "Escolha a ROM neste aparelho primeiro." else { tab = "Jogar"; localTwoPlayer = true; localP2 = true } }, enabled = rom != null, colors = ButtonDefaults.buttonColors(containerColor = Accent), modifier=Modifier.padding(top=10.dp)) { Text("Abrir jogo em modo local 2P") }
                             Text("Escolha a ROM neste aparelho e depois abra o jogo local.", color = Muted, fontSize = 11.sp, modifier = Modifier.padding(top=8.dp))
@@ -386,24 +427,25 @@ class MainActivity : ComponentActivity() {
                                 busy = true; roomError = ""
                                 Thread {
                                     val code = (1..6).map { "ABCDEFGHJKLMNPQRSTUVWXYZ23456789".random() }.joinToString("")
-                                    val active = rom
-                                    if (active == null) { runOnUiThread { busy=false; roomError="Carregue uma ROM antes de criar a sala." }; return@Thread }
-                                    val payload = hashMapOf<String, Any>("roomCode" to code, "hostUid" to (user?.uid ?: ""), "hostName" to (user?.email?.substringBefore("@") ?: "Host P1"), "guestUid" to "", "guestName" to "", "mode" to "remote", "consoleId" to active.coreSpec.id, "romName" to active.fileName, "romHash" to active.sha256, "romRegion" to active.region.name, "romSize" to active.bytes.size, "guestRomHash" to "", "guestRomRegion" to "NONE", "guestAccessStatus" to "empty", "status" to "waiting", "inputDelay" to 1, "createdAt" to FieldValue.serverTimestamp(), "updatedAt" to FieldValue.serverTimestamp())
+                                            val active = rom
+                                    if (active == null) { runOnUiThread { busy=false; roomError="P1 precisa carregar a ROM antes de criar a sala." }; return@Thread }
+                                    val payload = hashMapOf<String, Any>("roomCode" to code, "hostUid" to (user?.uid ?: ""), "hostName" to (user?.email?.substringBefore("@") ?: "Host P1"), "guestUid" to "", "guestName" to "", "mode" to "remote-stream", "consoleId" to active.coreSpec.id, "romName" to active.fileName, "romHash" to active.sha256, "romRegion" to active.region.name, "romSize" to active.bytes.size, "guestRomHash" to "", "guestRomRegion" to "NONE", "guestAccessStatus" to "empty", "streamOffer" to mapOf("sdp" to "", "type" to "offer"), "streamAnswer" to mapOf("sdp" to "", "type" to "answer"), "streamHostCandidates" to emptyList<Map<String, Any>>(), "streamGuestCandidates" to emptyList<Map<String, Any>>(), "status" to "waiting", "inputDelay" to 1, "createdAt" to FieldValue.serverTimestamp(), "updatedAt" to FieldValue.serverTimestamp())
                                     db.collection("rooms").document(code).set(payload).addOnSuccessListener { roomCode=code;busy=false }.addOnFailureListener { e->roomError=e.localizedMessage ?: "Erro ao criar sala";busy=false }
                                 }.start()
                             }, colors = ButtonDefaults.buttonColors(containerColor = Accent)) { Text(if (busy) "Aguarde…" else "Criar sala") }
                             Spacer(Modifier.height(10.dp))
                             OutlinedTextField(roomCode, { roomCode=it.uppercase().take(6) }, label={Text("Código da sala")}, singleLine=true)
-                            Button(enabled = !busy && roomCode.length == 6 && rom != null, onClick = {
-                                val code = roomCode.trim(); val active = rom ?: return@Button; busy=true; roomError=""
+                            Button(enabled = !busy && roomCode.length == 6, onClick = {
+                                val code = roomCode.trim(); val active = rom; busy=true; roomError=""
                                 db.collection("rooms").document(code).get().addOnSuccessListener { doc ->
                                     if (!doc.exists()) { roomError="Sala não encontrada."; busy=false }
                                     else {
-                                        val hash=doc.getString("romHash") ?: ""; val region=doc.getString("romRegion") ?: ""
-                                        val console = doc.getString("consoleId") ?: ""
-                                        if (hash != active.sha256 || region != active.region.name || console != active.coreSpec.id) { roomError="A ROM precisa ser a mesma, do mesmo sistema e da mesma região da sala."; busy=false }
-                                        else if (doc.getString("hostUid") == user?.uid) { roomError="P1 não pode entrar na própria sala como P2."; busy=false }
-                                        else doc.reference.update(mapOf("guestUid" to (user?.uid ?: ""), "guestName" to (user?.email?.substringBefore("@") ?: "P2"), "guestRomHash" to active.sha256, "guestRomRegion" to active.region.name, "guestAccessStatus" to "pending", "updatedAt" to FieldValue.serverTimestamp())).addOnSuccessListener { busy=false; roomError="P2 entrou na sala. Aguarde P1 liberar o acesso." }.addOnFailureListener { e->roomError=e.localizedMessage ?: "Falha ao entrar";busy=false }
+                                        if (doc.getString("hostUid") == user?.uid) { roomError="P1 não pode entrar na própria sala como P2."; busy=false }
+                                        else if (doc.getString("guestUid").orEmpty().isNotBlank()) { roomError="Essa sala já tem um P2 conectado."; busy=false }
+                                        else {
+                                            val updates = hashMapOf<String, Any>("guestUid" to (user?.uid ?: ""), "guestName" to (user?.email?.substringBefore("@") ?: "P2"), "guestRomHash" to (active?.sha256 ?: ""), "guestRomRegion" to (active?.region?.name ?: "NONE"), "guestAccessStatus" to "pending", "updatedAt" to FieldValue.serverTimestamp())
+                                            doc.reference.update(updates).addOnSuccessListener { busy=false; roomError="P2 entrou sem baixar a ROM. Aguarde P1 liberar o stream de jogo." }.addOnFailureListener { e->roomError=e.localizedMessage ?: "Falha ao entrar";busy=false }
+                                        }
                                     }
                                 }.addOnFailureListener { e->roomError=e.localizedMessage ?: "Falha ao procurar sala";busy=false }
                             }) { Text("Entrar na sala") }
@@ -412,14 +454,15 @@ class MainActivity : ComponentActivity() {
                                     Text("Sala $roomCode · ${roomInfo?.get("status") ?: ""}", color=Color.White, fontWeight=FontWeight.Bold)
                                     Text("ROM: ${roomInfo?.get("romName") ?: ""} · ${roomInfo?.get("romRegion") ?: ""}", color=Muted, fontSize=11.sp)
                                     Text("P2: ${roomInfo?.get("guestName")?.takeIf { it.toString().isNotBlank() } ?: "aguardando"} · ${roomInfo?.get("guestAccessStatus") ?: ""}", color=Muted, fontSize=11.sp)
+                                    if (roomInfo?.get("hostUid") != user?.uid && roomInfo?.get("guestUid") == user?.uid) Text(if (roomInfo?.get("guestAccessStatus") == "approved") "P2 recebe jogo e áudio do P1 — sem ROM local" else "Aguardando P1 liberar a transmissão…", color=Color(0xFF34D399), fontSize=11.sp)
                                     if (roomInfo?.get("hostUid") == user?.uid && roomInfo?.get("guestUid").toString().isNotBlank()) {
                                         Button(enabled = roomInfo?.get("guestAccessStatus") != "approved", onClick = {
                                             db.collection("rooms").document(roomCode).update(mapOf("guestAccessStatus" to "approved", "status" to "playing", "updatedAt" to FieldValue.serverTimestamp()))
-                                                .addOnSuccessListener { roomError = "P2 liberado. A ROM será aberta neste aparelho e no aparelho de P2." }
+                                                .addOnSuccessListener { roomError = "P2 liberado. Abrindo stream somente do jogo e do áudio." }
                                                 .addOnFailureListener { e -> roomError = e.localizedMessage ?: "Falha ao liberar P2" }
                                         }, colors=ButtonDefaults.buttonColors(containerColor=Color(0xFF059669))) { Text(if (roomInfo?.get("guestAccessStatus") == "approved") "P2 liberado" else "Liberar P2") }
                                     }
-                                    Text("A sala e a validação da ROM já usam sua conta; a sincronização ao vivo dos controles ainda precisa ser portada para esta versão nativa.", color=Color(0xFFFFC857), fontSize=10.sp, modifier=Modifier.padding(top=6.dp))
+                                    Text("A transmissão envia apenas quadros do emulador e PCM do núcleo; não usa captura de tela, microfone nem notificações. O controle remoto de P2 ainda não está ligado.", color=Color(0xFFFFC857), fontSize=10.sp, modifier=Modifier.padding(top=6.dp))
                                 } }
                             }
                         }
