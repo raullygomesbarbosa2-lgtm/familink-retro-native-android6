@@ -39,6 +39,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -205,12 +206,12 @@ class MainActivity : ComponentActivity() {
                     }
                     Row(Modifier.align(Alignment.BottomCenter).fillMaxWidth().padding(horizontal=14.dp,vertical=8.dp), horizontalArrangement=Arrangement.SpaceBetween, verticalAlignment=Alignment.Bottom) {
                         AnalogStick(onMove={x,y->updateAnalog(x,y)})
-                        Row(horizontalArrangement=Arrangement.spacedBy(5.dp), verticalAlignment=Alignment.CenterVertically) { PadButton("SEL",2){b,d->updateTouchBit(b,d)}; PadButton("STR",3){b,d->updateTouchBit(b,d)} }
+                        Row(horizontalArrangement=Arrangement.spacedBy(5.dp), verticalAlignment=Alignment.CenterVertically) { PadButton("SEL",2,buttonSize=54.dp){b,d->updateTouchBit(b,d)}; PadButton("STR",3,buttonSize=54.dp){b,d->updateTouchBit(b,d)} }
                         Column(horizontalAlignment=Alignment.CenterHorizontally) {
-                            Row(horizontalArrangement=Arrangement.spacedBy(5.dp)) { PadButton("L1",10){b,d->updateTouchBit(b,d)}; PadButton("R1",11){b,d->updateTouchBit(b,d)} }
-                            PadButton("△",8,Color(0xFF10B981)){b,d->updateTouchBit(b,d)}
-                            Row(horizontalArrangement=Arrangement.spacedBy(7.dp)) { PadButton("□",9,Color(0xFFEC4899)){b,d->updateTouchBit(b,d)}; PadButton("○",0,Color(0xFFEF4444)){b,d->updateTouchBit(b,d)} }
-                            PadButton("✕",1,Color(0xFF3B82F6)){b,d->updateTouchBit(b,d)}
+                            Row(horizontalArrangement=Arrangement.spacedBy(5.dp)) { PadButton("L1",10,buttonSize=54.dp){b,d->updateTouchBit(b,d)}; PadButton("R1",11,buttonSize=54.dp){b,d->updateTouchBit(b,d)} }
+                            PadButton("△",8,Color(0xFF10B981),buttonSize=64.dp){b,d->updateTouchBit(b,d)}
+                            Row(horizontalArrangement=Arrangement.spacedBy(7.dp)) { PadButton("□",9,Color(0xFFEC4899),buttonSize=64.dp){b,d->updateTouchBit(b,d)}; PadButton("○",0,Color(0xFFEF4444),buttonSize=64.dp){b,d->updateTouchBit(b,d)} }
+                            PadButton("✕",1,Color(0xFF3B82F6),buttonSize=64.dp){b,d->updateTouchBit(b,d)}
                         }
                     }
                 }
@@ -259,11 +260,11 @@ class MainActivity : ComponentActivity() {
                         Spacer(Modifier.height(5.dp))
                         Row(Modifier.fillMaxWidth().padding(4.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                             AnalogStick(onMove = { x, y -> updateAnalog(x, y) })
-                            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) { PadButton("SEL",2){b,d->updateTouchBit(b,d)}; PadButton("STR",3){b,d->updateTouchBit(b,d)} }
+                            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) { PadButton("SEL",2,buttonSize=54.dp){b,d->updateTouchBit(b,d)}; PadButton("STR",3,buttonSize=54.dp){b,d->updateTouchBit(b,d)} }
                             Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                PadButton("△",8,Color(0xFF10B981)){b,d->updateTouchBit(b,d)}
-                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) { PadButton("□",9,Color(0xFFEC4899)){b,d->updateTouchBit(b,d)}; PadButton("○",0,Color(0xFFEF4444)){b,d->updateTouchBit(b,d)} }
-                                PadButton("✕",1,Color(0xFF3B82F6)){b,d->updateTouchBit(b,d)}
+                                PadButton("△",8,Color(0xFF10B981),buttonSize=64.dp){b,d->updateTouchBit(b,d)}
+                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) { PadButton("□",9,Color(0xFFEC4899),buttonSize=64.dp){b,d->updateTouchBit(b,d)}; PadButton("○",0,Color(0xFFEF4444),buttonSize=64.dp){b,d->updateTouchBit(b,d)} }
+                                PadButton("✕",1,Color(0xFF3B82F6),buttonSize=64.dp){b,d->updateTouchBit(b,d)}
                             }
                         }
                     }
@@ -355,8 +356,8 @@ class MainActivity : ComponentActivity() {
     }
 
     @Composable
-    private fun PadButton(label: String, bit: Int, tint: Color = Color.White, onTouch: (Int, Boolean) -> Unit) {
-        Box(contentAlignment = Alignment.Center, modifier = Modifier.size(42.dp).background(Color.Transparent, CircleShape).border(1.dp, tint.copy(alpha = 0.48f), CircleShape).pointerInput(bit) {
+    private fun PadButton(label: String, bit: Int, tint: Color = Color.White, buttonSize: Dp = 60.dp, onTouch: (Int, Boolean) -> Unit) {
+        Box(contentAlignment = Alignment.Center, modifier = Modifier.size(buttonSize).background(Color.Transparent, CircleShape).border(1.dp, tint.copy(alpha = 0.48f), CircleShape).pointerInput(bit) {
             detectTapGestures(onPress = { onTouch(bit,true); tryAwaitRelease(); onTouch(bit,false) })
         }) { Text(label, color=tint, fontSize=13.sp) }
     }
@@ -397,7 +398,7 @@ private fun AnalogStick(onMove: (Float, Float) -> Unit) {
     var knob by remember { mutableStateOf(Offset.Zero) }
     Canvas(
         modifier = Modifier
-            .size(118.dp)
+            .size(154.dp)
             .pointerInput(Unit) {
                 val radius = minOf(size.width.toFloat(), size.height.toFloat()) * 0.34f
                 fun update(position: Offset) {

@@ -18,6 +18,7 @@ static void (*g_retro_deinit)(void) = nullptr;
 static bool (*g_retro_load_game)(const retro_game_info*) = nullptr;
 static void (*g_retro_unload_game)(void) = nullptr;
 static void (*g_retro_run)(void) = nullptr;
+static void (*g_retro_get_system_av_info)(void*) = nullptr;
 static size_t (*g_retro_serialize_size)(void) = nullptr;
 static bool (*g_retro_serialize)(void*, size_t) = nullptr;
 static bool (*g_retro_unserialize)(const void*, size_t) = nullptr;
@@ -135,6 +136,7 @@ Java_com_familink_emulator_NativeCoreBridge_nativeLoadCore(JNIEnv* env, jobject,
     g_retro_load_game = reinterpret_cast<bool(*)(const retro_game_info*)>(dlsym(g_core_handle, "retro_load_game"));
     g_retro_unload_game = reinterpret_cast<void(*)()>(dlsym(g_core_handle, "retro_unload_game"));
     g_retro_run = reinterpret_cast<void(*)()>(dlsym(g_core_handle, "retro_run"));
+    g_retro_get_system_av_info = reinterpret_cast<void(*)(void*)>(dlsym(g_core_handle, "retro_get_system_av_info"));
     g_retro_serialize_size = reinterpret_cast<size_t(*)()>(dlsym(g_core_handle, "retro_serialize_size"));
     g_retro_serialize = reinterpret_cast<bool(*)(void*, size_t)>(dlsym(g_core_handle, "retro_serialize"));
     g_retro_unserialize = reinterpret_cast<bool(*)(const void*, size_t)>(dlsym(g_core_handle, "retro_unserialize"));
@@ -151,6 +153,12 @@ Java_com_familink_emulator_NativeCoreBridge_nativeLoadCore(JNIEnv* env, jobject,
     g_set_input_poll(input_poll_cb);
     g_set_input_state(input_state_cb);
     g_retro_init();
+    if (g_retro_get_system_av_info) {
+        retro_system_av_info info{};
+        g_retro_get_system_av_info(&info);
+        if (info.timing.sample_rate >= 8000.0 && info.timing.sample_rate <= 192000.0)
+            g_audio_sample_rate = info.timing.sample_rate;
+    }
     return JNI_TRUE;
 }
 
@@ -163,6 +171,12 @@ Java_com_familink_emulator_NativeCoreBridge_nativeLoadRomBytes(JNIEnv* env, jobj
     g_rom_bytes.assign(reinterpret_cast<uint8_t*>(raw), reinterpret_cast<uint8_t*>(raw) + len);
     retro_game_info info { path, g_rom_bytes.data(), static_cast<size_t>(len), nullptr };
     bool ok = g_retro_load_game(&info);
+    if (ok && g_retro_get_system_av_info) {
+        retro_system_av_info info{};
+        g_retro_get_system_av_info(&info);
+        if (info.timing.sample_rate >= 8000.0 && info.timing.sample_rate <= 192000.0)
+            g_audio_sample_rate = info.timing.sample_rate;
+    }
     env->ReleaseByteArrayElements(bytes, raw, JNI_ABORT);
     env->ReleaseStringUTFChars(romPath, path);
     return ok ? JNI_TRUE : JNI_FALSE;
@@ -239,5 +253,5 @@ Java_com_familink_emulator_NativeCoreBridge_nativeUnload(JNIEnv*, jobject) {
     g_rom_bytes.clear(); g_pixels.clear(); g_audio_ring.clear();
     if (g_core_handle) { dlclose(g_core_handle); g_core_handle = nullptr; }
     g_retro_init = nullptr; g_retro_deinit = nullptr; g_retro_load_game = nullptr;
-    g_retro_unload_game = nullptr; g_retro_run = nullptr;
+    g_retro_unload_game = nullptr; g_retro_run = nullptr; g_retro_get_system_av_info = nullptr;
 }
