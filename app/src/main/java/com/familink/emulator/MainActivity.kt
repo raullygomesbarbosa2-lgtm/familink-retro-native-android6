@@ -38,7 +38,7 @@ class MainActivity : ComponentActivity() {
 
     private fun refreshBluetoothPads() {
         val im = getSystemService(Context.INPUT_SERVICE) as InputManager
-        btNamesState.value = im.inputDeviceIds.mapNotNull { id ->
+        btNamesState.value = im.inputDeviceIds.toList().mapNotNull { id ->
             val dev = InputDevice.getDevice(id) ?: return@mapNotNull null
             val isPad = (dev.sources and InputDevice.SOURCE_GAMEPAD) == InputDevice.SOURCE_GAMEPAD ||
                 (dev.sources and InputDevice.SOURCE_JOYSTICK) == InputDevice.SOURCE_JOYSTICK
