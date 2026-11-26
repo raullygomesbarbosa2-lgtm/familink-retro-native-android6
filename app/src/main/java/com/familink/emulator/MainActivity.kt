@@ -11,6 +11,7 @@ import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.View
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
@@ -137,11 +138,17 @@ class MainActivity : ComponentActivity() {
         var localTwoPlayer by remember { mutableStateOf(false) }
         var search by remember { mutableStateOf("") }
         var selectedCoreId by remember { mutableStateOf<String?>(null) }
+        var pickerOrigin by remember { mutableStateOf("Jogar") }
         var roomCode by remember { mutableStateOf("") }
         var roomInfo by remember { mutableStateOf<Map<String, Any>?>(null) }
         var roomError by remember { mutableStateOf("") }
         var busy by remember { mutableStateOf(false) }
         val btDevices by btNamesState
+
+        BackHandler(enabled = (rom != null && isLandscape) || tab != "Jogar") {
+            requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+            tab = "Jogar"
+        }
 
         DisposableEffect(auth) {
             val listener = FirebaseAuth.AuthStateListener { instance -> user = instance.currentUser }
@@ -188,7 +195,13 @@ class MainActivity : ComponentActivity() {
                         NativeCoreBridge.nativeUnload()
                         check(NativeCoreBridge.nativeLoadCore(coreFile.absolutePath)) { "Não consegui abrir o núcleo ${loaded.coreSpec.nativeSoName}" }
                         check(NativeCoreBridge.nativeLoadRomBytes(loaded.fileName, loaded.bytes)) { "O núcleo não aceitou essa ROM" }
-                        runOnUiThread { requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE; rom = loaded; status = "${loaded.coreSpec.consoleName} · ${loaded.region} · ${loaded.fileName}"; busy = false }
+                        runOnUiThread {
+                            rom = loaded
+                            status = "${loaded.coreSpec.consoleName} · ${loaded.region} · ${loaded.fileName}"
+                            if (pickerOrigin == "Jogar") requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
+                            else requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+                            busy = false
+                        }
                     } catch (e: Exception) {
                         runOnUiThread { status = e.message ?: "Erro ao carregar ROM"; busy = false }
                     }
@@ -242,7 +255,7 @@ class MainActivity : ComponentActivity() {
                         Text(status, color = Muted, fontSize = 11.sp, maxLines = 2)
                         Spacer(Modifier.height(8.dp))
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                            Button(onClick = { romPicker.launch(arrayOf("*/*")) }, enabled = !busy, colors = ButtonDefaults.buttonColors(containerColor = Accent)) { Text(if (busy) "Carregando…" else "Abrir ROM") }
+                            Button(onClick = { pickerOrigin = "Jogar"; romPicker.launch(arrayOf("*/*")) }, enabled = !busy, colors = ButtonDefaults.buttonColors(containerColor = Accent)) { Text(if (busy) "Carregando…" else "Abrir ROM") }
                             OutlinedButton(onClick = { targetFps = if (targetFps == 30) 60 else 30 }) { Text("$targetFps FPS", color = Color.White) }
                             TextButton(onClick = { localTwoPlayer = !localTwoPlayer; localP2 = localTwoPlayer; touchMask = 0; analogMask = 0; surfaceRef?.p1AnalogX = 0f; surfaceRef?.p1AnalogY = 0f; surfaceRef?.p2AnalogX = 0f; surfaceRef?.p2AnalogY = 0f }) { Text(if (localTwoPlayer) "2 jogadores" else "Solo", color = if (localTwoPlayer) Color(0xFF34D399) else Color.White, fontSize = 11.sp) }
                         }
@@ -289,6 +302,7 @@ class MainActivity : ComponentActivity() {
                                         }
                                         Button(onClick = {
                                             selectedCoreId = core.id
+                                            pickerOrigin = "Jogar"
                                             tab = "Jogar"
                                             romPicker.launch(arrayOf("*/*"))
                                         }, colors = ButtonDefaults.buttonColors(containerColor = if (isSelected) Color(0xFF059669) else Accent), contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)) {
@@ -303,9 +317,14 @@ class MainActivity : ComponentActivity() {
                         Text(if (tab == "Online") "Netplay Online" else "Netplay Local", color = Color.White, fontSize = 21.sp, fontWeight = FontWeight.Bold)
                         Text(if (tab == "Online") "Entre com sua conta para criar ou localizar uma sala." else "Modo local para dois jogadores no mesmo aparelho.", color = Muted, fontSize = 12.sp)
                         Spacer(Modifier.height(14.dp))
+                        Button(onClick = { pickerOrigin = tab; romPicker.launch(arrayOf("*/*")) }, enabled = !busy, colors = ButtonDefaults.buttonColors(containerColor = Accent)) {
+                            Text(if (rom == null) "Escolher ROM neste aparelho" else "Trocar ROM (${rom?.fileName})", maxLines = 1, fontSize = 12.sp)
+                        }
+                        if (rom != null) Text("ROM carregada neste aparelho: ${rom?.fileName} · ${rom?.region}", color = Color(0xFF34D399), fontSize = 11.sp, modifier = Modifier.padding(top=7.dp))
+                        if (tab == "Online") Text("Nos dois aparelhos, carregue a mesma ROM; a sala confere o arquivo e a região.", color = Muted, fontSize = 11.sp, modifier = Modifier.padding(top=7.dp))
                         if (tab == "Local") {
-                            Button(onClick = { tab = "Jogar"; localTwoPlayer = true; localP2 = true }, colors = ButtonDefaults.buttonColors(containerColor = Accent)) { Text("Abrir jogo em modo local 2P") }
-                            Text("Carregue a ROM em Jogar e ative 2 jogadores para usar os controles locais.", color = Muted, fontSize = 11.sp, modifier = Modifier.padding(top=8.dp))
+                            Button(onClick = { if (rom == null) roomError = "Escolha a ROM neste aparelho primeiro." else { tab = "Jogar"; localTwoPlayer = true; localP2 = true } }, enabled = rom != null, colors = ButtonDefaults.buttonColors(containerColor = Accent), modifier=Modifier.padding(top=10.dp)) { Text("Abrir jogo em modo local 2P") }
+                            Text("Escolha a ROM neste aparelho e depois abra o jogo local.", color = Muted, fontSize = 11.sp, modifier = Modifier.padding(top=8.dp))
                         } else if (user == null) {
                             Card(colors = CardDefaults.cardColors(containerColor = Panel)) { Column(Modifier.padding(16.dp)) { Text("Conta necessária", color = Color.White, fontWeight = FontWeight.Bold); Text("Crie sua conta ou entre com e-mail e senha. Você também pode recuperar a senha por e-mail.", color = Muted, fontSize = 12.sp, modifier = Modifier.padding(vertical=8.dp)); Button(onClick = { authMode="login"; authDialog=true }, colors=ButtonDefaults.buttonColors(containerColor=Accent)) { Text("Entrar / criar conta") } } }
                         } else {
