@@ -16,9 +16,19 @@ data class VerifiedRom(
 )
 
 object RomVerifier {
-    fun loadFromUri(context: Context, uri: Uri): VerifiedRom {
+    fun loadFromUri(context: Context, uri: Uri, selectedCoreId: String? = null): VerifiedRom {
         val fileName = resolveName(context, uri)
-        val coreSpec = CoreRegistry.detectForFilename(fileName)
+        val coreSpec = if (selectedCoreId.isNullOrBlank()) {
+            CoreRegistry.detectForFilename(fileName)
+        } else {
+            val selected = CoreRegistry.cores.firstOrNull { it.id == selectedCoreId }
+                ?: throw IllegalArgumentException("O núcleo escolhido não está disponível.")
+            val lowerName = fileName.lowercase()
+            if (selected.extensions.none { lowerName.endsWith(it) }) {
+                throw IllegalArgumentException("$fileName não é compatível com ${selected.consoleName}. Formatos aceitos: ${selected.extensions.joinToString()}.")
+            }
+            selected
+        }
         val bytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
             ?: throw IllegalStateException("Falha ao abrir arquivo ROM.")
 

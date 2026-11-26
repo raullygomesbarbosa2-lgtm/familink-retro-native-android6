@@ -105,6 +105,7 @@ class MainActivity : ComponentActivity() {
         var targetFps by remember { mutableIntStateOf(30) }
         var localTwoPlayer by remember { mutableStateOf(false) }
         var search by remember { mutableStateOf("") }
+        var selectedCoreId by remember { mutableStateOf<String?>(null) }
         var roomCode by remember { mutableStateOf("") }
         var roomInfo by remember { mutableStateOf<Map<String, Any>?>(null) }
         var roomError by remember { mutableStateOf("") }
@@ -133,7 +134,7 @@ class MainActivity : ComponentActivity() {
                 status = "Lendo ROM e preparando o núcleo nativo…"
                 Thread {
                     try {
-                        val loaded = RomVerifier.loadFromUri(ctx, uri)
+                        val loaded = RomVerifier.loadFromUri(ctx, uri, selectedCoreId)
                         val coreFile = File(ctx.filesDir, "cores/${loaded.coreSpec.nativeSoName}")
                         if (!coreFile.exists()) {
                             coreFile.parentFile?.mkdirs()
@@ -224,15 +225,31 @@ class MainActivity : ComponentActivity() {
                     }
                     "Núcleos" -> Column(Modifier.fillMaxSize().padding(12.dp)) {
                         Text("Núcleos & ROMs · ${CoreRegistry.cores.size} sistemas", color = Color.White, fontSize = 19.sp, fontWeight = FontWeight.Bold)
-                        Text("Selecione uma ROM sua; o app baixa o núcleo compatível.", color = Muted, fontSize = 11.sp)
+                        Text("Toque num sistema e escolha ‘Abrir ROM’ para usar esse núcleo.", color = Muted, fontSize = 11.sp)
+                        selectedCoreId?.let { id ->
+                            val selected = CoreRegistry.cores.firstOrNull { it.id == id }
+                            if (selected != null) Text("Selecionado: ${selected.consoleName}", color = Color(0xFF34D399), fontSize = 11.sp, modifier = Modifier.padding(top = 5.dp))
+                        }
                         Spacer(Modifier.height(8.dp))
                         OutlinedTextField(search, { search = it }, modifier = Modifier.fillMaxWidth(), placeholder = { Text("Buscar console ou extensão") }, singleLine = true)
                         Spacer(Modifier.height(8.dp))
                         LazyColumn(verticalArrangement = Arrangement.spacedBy(7.dp)) {
                             items(CoreRegistry.cores.filter { it.consoleName.contains(search, true) || it.id.contains(search, true) || it.extensions.any { e -> e.contains(search, true) } }) { core ->
-                                Column(Modifier.fillMaxWidth().background(Panel, RoundedCornerShape(10.dp)).padding(12.dp)) {
-                                    Text(core.consoleName, color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
-                                    Text("ROM: ${core.extensions.joinToString()} · Núcleo: ${core.nativeSoName}", color = Muted, fontSize = 10.sp)
+                                val isSelected = selectedCoreId == core.id
+                                Column(Modifier.fillMaxWidth().background(if (isSelected) Color(0xFF193329) else Panel, RoundedCornerShape(10.dp)).clickable { selectedCoreId = core.id }.padding(12.dp)) {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Column(Modifier.weight(1f)) {
+                                            Text(core.consoleName, color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+                                            Text("ROM: ${core.extensions.joinToString()} · Núcleo: ${core.nativeSoName}", color = Muted, fontSize = 10.sp)
+                                        }
+                                        Button(onClick = {
+                                            selectedCoreId = core.id
+                                            tab = "Jogar"
+                                            romPicker.launch(arrayOf("*/*"))
+                                        }, colors = ButtonDefaults.buttonColors(containerColor = if (isSelected) Color(0xFF059669) else Accent), contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)) {
+                                            Text(if (isSelected) "Abrir ROM" else "Usar", fontSize = 11.sp)
+                                        }
+                                    }
                                 }
                             }
                         }
