@@ -3,8 +3,11 @@
 #include <dlfcn.h>
 #include <cstdint>
 #include <cstring>
+#include <mutex>
 #include <string>
+#include <unordered_map>
 #include <vector>
+#include <sys/stat.h>
 
 struct retro_game_info {
     const char* path;
@@ -13,6 +16,7 @@ struct retro_game_info {
     const char* meta;
 };
 
+static std::mutex g_core_mutex;
 static void* g_core_handle = nullptr;
 static void (*g_retro_init)(void) = nullptr;
 static void (*g_retro_deinit)(void) = nullptr;
@@ -41,30 +45,106 @@ static unsigned g_pixel_format = 2; // Libretro: 0=0RGB1555, 1=XRGB8888, 2=RGB56
 static double g_audio_sample_rate = 48000.0;
 static std::vector<uint8_t> g_rom_bytes;
 static std::string g_game_path;
+static std::string g_system_directory;
+static std::string g_save_directory;
+static std::string g_content_directory;
+static std::string g_core_path;
+static std::unordered_map<std::string, std::string> g_core_variables;
+struct retro_variable { const char* key; const char* value; };
 
 struct retro_game_geometry { unsigned base_width, base_height, max_width, max_height; float aspect_ratio; };
 struct retro_system_timing { double fps, sample_rate; };
 struct retro_system_av_info { retro_game_geometry geometry; retro_system_timing timing; };
 
 static bool env_cb(unsigned cmd, void* data) {
-    if (cmd == 10 && data) {
-        const unsigned requested = *static_cast<const unsigned*>(data);
-        if (requested > 2) return false;
-        g_pixel_format = requested;
-        return true;
+    // Core initialization and MAME-family cores rely on these standard libretro environment services.
+    switch (cmd) {
+        case 2: // GET_OVERSCAN
+            if (data) *static_cast<bool*>(data) = false;
+            return true;
+        case 3: // GET_CAN_DUPE
+            if (data) *static_cast<bool*>(data) = true;
+            return true;
+        case 9: // GET_SYSTEM_DIRECTORY
+            if (!data) return false;
+            *static_cast<const char**>(data) = g_system_directory.c_str();
+            return true;
+        case 10: { // SET_PIXEL_FORMAT
+            if (!data) return false;
+            const unsigned requested = *static_cast<const unsigned*>(data);
+            if (requested > 2) return false;
+            g_pixel_format = requested;
+            return true;
+        }
+        case 15: { // GET_VARIABLE
+            if (!data) return false;
+            auto* variable = static_cast<retro_variable*>(data);
+            if (!variable->key) return false;
+            auto it = g_core_variables.find(variable->key);
+            if (it == g_core_variables.end()) return false;
+            variable->value = it->second.c_str();
+            return true;
+        }
+        case 16: { // SET_VARIABLES; preserve each core's documented default option.
+            if (!data) return false;
+            g_core_variables.clear();
+            auto* variables = static_cast<retro_variable*>(data);
+            for (size_t i = 0; i < 512 && variables[i].key; ++i) {
+                const char* raw = variables[i].value;
+                if (!raw) continue;
+                const char* separator = std::strchr(raw, ';');
+                if (!separator) continue;
+                while (*++separator == ' ') {}
+                const char* end = std::strchr(separator, '|');
+                g_core_variables.emplace(variables[i].key, std::string(separator, end ? static_cast<size_t>(end - separator) : std::strlen(separator)));
+            }
+            return true;
+        }
+        case 17: // GET_VARIABLE_UPDATE
+            if (data) *static_cast<bool*>(data) = false;
+            return true;
+        case 18: // SET_SUPPORT_NO_GAME
+            return true;
+        case 19: // GET_LIBRETRO_PATH
+            if (!data) return false;
+            *static_cast<const char**>(data) = g_core_path.c_str();
+            return true;
+        case 24: // GET_INPUT_DEVICE_CAPABILITIES
+            if (data) *static_cast<uint64_t*>(data) = (1ULL << 1) | (1ULL << 5);
+            return true;
+        case 31: // GET_SAVE_DIRECTORY
+            if (!data) return false;
+            *static_cast<const char**>(data) = g_save_directory.c_str();
+            return true;
+        case 32: { // SET_SYSTEM_AV_INFO
+            if (!data) return false;
+            const auto* info = static_cast<const retro_system_av_info*>(data);
+            if (info->timing.sample_rate >= 8000.0 && info->timing.sample_rate <= 192000.0)
+                g_audio_sample_rate = info->timing.sample_rate;
+            return true;
+        }
+        case 38: // GET_USERNAME: allow cores to run without requiring a profile.
+            if (!data) return false;
+            *static_cast<const char**>(data) = "FamiLink";
+            return true;
+        case 39: // GET_LANGUAGE: English default.
+            if (data) *static_cast<unsigned*>(data) = 0;
+            return true;
+        case 30: // GET_CORE_ASSETS_DIRECTORY
+        case 40: // GET_CONTENT_DIRECTORY
+            if (!data) return false;
+            *static_cast<const char**>(data) = g_content_directory.c_str();
+            return true;
+        default:
+            return false;
     }
-    if (cmd == 32 && data) { // RETRO_ENVIRONMENT_SET_SYSTEM_AV_INFO
-        const auto* info = static_cast<const retro_system_av_info*>(data);
-        if (info->timing.sample_rate >= 8000.0 && info->timing.sample_rate <= 192000.0)
-            g_audio_sample_rate = info->timing.sample_rate;
-        return true;
-    }
-    return false;
 }
 
 static void video_cb(const void* data, unsigned width, unsigned height, size_t pitch) {
     if (!data) return;
     if (width == 0 || height == 0 || width > 1024 || height > 768) return;
+    const size_t bytes_per_pixel = (g_pixel_format == 1) ? sizeof(uint32_t) : sizeof(uint16_t);
+    if (pitch < static_cast<size_t>(width) * bytes_per_pixel) return;
     g_width = width;
     g_height = height;
     g_pixels.resize(width * height);
@@ -128,8 +208,18 @@ static int16_t input_state_cb(unsigned port, unsigned device, unsigned index, un
 
 extern "C" JNIEXPORT jboolean JNICALL
 Java_com_familink_emulator_NativeCoreBridge_nativeLoadCore(JNIEnv* env, jobject, jstring soPath) {
+    std::lock_guard<std::mutex> lock(g_core_mutex);
     const char* path = env->GetStringUTFChars(soPath, nullptr);
-    g_core_handle = dlopen(path, RTLD_LAZY);
+    g_core_path.assign(path);
+    const size_t slash = g_core_path.find_last_of('/');
+    const std::string core_dir = slash == std::string::npos ? "." : g_core_path.substr(0, slash);
+    g_system_directory = core_dir + "/system";
+    g_save_directory = core_dir + "/saves";
+    g_content_directory = core_dir + "/system";
+    mkdir(g_system_directory.c_str(), 0770);
+    mkdir(g_save_directory.c_str(), 0770);
+    g_core_variables.clear();
+    g_core_handle = dlopen(path, RTLD_NOW | RTLD_LOCAL);
     env->ReleaseStringUTFChars(soPath, path);
     if (!g_core_handle) return JNI_FALSE;
 
@@ -171,6 +261,7 @@ Java_com_familink_emulator_NativeCoreBridge_nativeLoadCore(JNIEnv* env, jobject,
 
 extern "C" JNIEXPORT jboolean JNICALL
 Java_com_familink_emulator_NativeCoreBridge_nativeLoadRomBytes(JNIEnv* env, jobject, jstring romPath, jbyteArray bytes) {
+    std::lock_guard<std::mutex> lock(g_core_mutex);
     if (!g_retro_load_game) return JNI_FALSE;
     const char* path = env->GetStringUTFChars(romPath, nullptr);
     g_game_path.assign(path);
@@ -192,6 +283,7 @@ Java_com_familink_emulator_NativeCoreBridge_nativeLoadRomBytes(JNIEnv* env, jobj
 
 extern "C" JNIEXPORT jboolean JNICALL
 Java_com_familink_emulator_NativeCoreBridge_nativeLoadRomFile(JNIEnv* env, jobject, jstring absolutePath) {
+    std::lock_guard<std::mutex> lock(g_core_mutex);
     if (!g_retro_load_game) return JNI_FALSE;
     const char* path = env->GetStringUTFChars(absolutePath, nullptr);
     g_game_path.assign(path);
@@ -208,6 +300,7 @@ Java_com_familink_emulator_NativeCoreBridge_nativeLoadRomFile(JNIEnv* env, jobje
 
 extern "C" JNIEXPORT jint JNICALL
 Java_com_familink_emulator_NativeCoreBridge_nativeRunFrame(JNIEnv* env, jobject, jint p1Mask, jint p2Mask, jfloat p1AnalogX, jfloat p1AnalogY, jfloat p2AnalogX, jfloat p2AnalogY, jintArray outPixels) {
+    std::lock_guard<std::mutex> lock(g_core_mutex);
     if (!g_retro_run) return 0;
     g_p1_analog_x = std::max(-1.f, std::min(1.f, static_cast<float>(p1AnalogX)));
     g_p1_analog_y = std::max(-1.f, std::min(1.f, static_cast<float>(p1AnalogY)));
@@ -235,11 +328,13 @@ Java_com_familink_emulator_NativeCoreBridge_nativeRunFrame(JNIEnv* env, jobject,
 
 extern "C" JNIEXPORT jint JNICALL
 Java_com_familink_emulator_NativeCoreBridge_nativeGetAudioSampleRate(JNIEnv*, jobject) {
+    std::lock_guard<std::mutex> lock(g_core_mutex);
     return static_cast<jint>(g_audio_sample_rate + 0.5);
 }
 
 extern "C" JNIEXPORT jint JNICALL
 Java_com_familink_emulator_NativeCoreBridge_nativeReadAudio(JNIEnv* env, jobject, jshortArray outPcm) {
+    std::lock_guard<std::mutex> lock(g_core_mutex);
     jsize maxLen = env->GetArrayLength(outPcm);
     jsize count = std::min<jsize>(maxLen, static_cast<jsize>(g_audio_ring.size()));
     if (count > 0) {
@@ -251,6 +346,7 @@ Java_com_familink_emulator_NativeCoreBridge_nativeReadAudio(JNIEnv* env, jobject
 
 extern "C" JNIEXPORT jbyteArray JNICALL
 Java_com_familink_emulator_NativeCoreBridge_nativeSaveState(JNIEnv* env, jobject) {
+    std::lock_guard<std::mutex> lock(g_core_mutex);
     if (!g_retro_serialize_size || !g_retro_serialize) return nullptr;
     size_t sz = g_retro_serialize_size();
     std::vector<uint8_t> buf(sz);
@@ -262,6 +358,7 @@ Java_com_familink_emulator_NativeCoreBridge_nativeSaveState(JNIEnv* env, jobject
 
 extern "C" JNIEXPORT jboolean JNICALL
 Java_com_familink_emulator_NativeCoreBridge_nativeLoadState(JNIEnv* env, jobject, jbyteArray stateBytes) {
+    std::lock_guard<std::mutex> lock(g_core_mutex);
     if (!g_retro_unserialize) return JNI_FALSE;
     jsize len = env->GetArrayLength(stateBytes);
     jbyte* raw = env->GetByteArrayElements(stateBytes, nullptr);
@@ -272,6 +369,7 @@ Java_com_familink_emulator_NativeCoreBridge_nativeLoadState(JNIEnv* env, jobject
 
 extern "C" JNIEXPORT void JNICALL
 Java_com_familink_emulator_NativeCoreBridge_nativeUnload(JNIEnv*, jobject) {
+    std::lock_guard<std::mutex> lock(g_core_mutex);
     if (g_retro_unload_game) g_retro_unload_game();
     if (g_retro_deinit) g_retro_deinit();
     g_rom_bytes.clear(); g_game_path.clear(); g_pixels.clear(); g_audio_ring.clear();

@@ -13,8 +13,8 @@ android {
         // This variant targets Android 10 (API 29) and newer, per the supported phone range.
         minSdk = 29
         targetSdk = 35
-        versionCode = 22
-        versionName = "1.0.22"
+        versionCode = 23
+        versionName = "1.0.23"
 
         ndk {
             abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64")
