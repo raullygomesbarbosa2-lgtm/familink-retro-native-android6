@@ -48,13 +48,15 @@ class EmulatorSurfaceView(context: Context) : View(context) {
         var track: AudioTrack? = null
         try {
             Process.setThreadPriority(Process.THREAD_PRIORITY_DISPLAY)
-            val sampleRate = NativeCoreBridge.nativeGetAudioSampleRate().coerceIn(8000, 192000)
-            val minimumBuffer = AudioTrack.getMinBufferSize(sampleRate, AudioFormat.CHANNEL_OUT_STEREO, AudioFormat.ENCODING_PCM_16BIT).coerceAtLeast(8192)
-            track = AudioTrack.Builder()
-                .setAudioAttributes(AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_GAME).build())
-                .setAudioFormat(AudioFormat.Builder().setEncoding(AudioFormat.ENCODING_PCM_16BIT).setSampleRate(sampleRate).setChannelMask(AudioFormat.CHANNEL_OUT_STEREO).build())
-                .setBufferSizeInBytes(minimumBuffer).build()
-            track.play()
+            // Audio setup is optional: a legacy device's AudioTrack failure must never stop video rendering.
+            track = try {
+                val sampleRate = NativeCoreBridge.nativeGetAudioSampleRate().coerceIn(8000, 192000)
+                val minimumBuffer = AudioTrack.getMinBufferSize(sampleRate, AudioFormat.CHANNEL_OUT_STEREO, AudioFormat.ENCODING_PCM_16BIT).coerceAtLeast(8192)
+                AudioTrack.Builder()
+                    .setAudioAttributes(AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_GAME).build())
+                    .setAudioFormat(AudioFormat.Builder().setEncoding(AudioFormat.ENCODING_PCM_16BIT).setSampleRate(sampleRate).setChannelMask(AudioFormat.CHANNEL_OUT_STEREO).build())
+                    .setBufferSizeInBytes(minimumBuffer).build().also { it.play() }
+            } catch (_: Exception) { null }
             while (running) {
                 val frameStart = System.nanoTime()
                 val packed = NativeCoreBridge.nativeRunFrame(
@@ -78,7 +80,7 @@ class EmulatorSurfaceView(context: Context) : View(context) {
                 }
                 // Feed native core audio without allowing an AudioTrack write to stall video frames.
                 val incoming = NativeCoreBridge.nativeReadAudio(audio).coerceIn(0, audio.size)
-                if (incoming > 0) {
+                if (track != null && incoming > 0) {
                     if (pendingCount + incoming > pendingAudio.size) {
                         val drop = pendingCount + incoming - pendingAudio.size
                         pendingHead = (pendingHead + drop).mod(pendingAudio.size)
@@ -96,7 +98,7 @@ class EmulatorSurfaceView(context: Context) : View(context) {
                 }
                 if (pendingCount > 0) {
                     val contiguous = minOf(pendingCount, pendingAudio.size - pendingHead)
-                    val written = track.write(pendingAudio, pendingHead, contiguous, AudioTrack.WRITE_NON_BLOCKING)
+                    val written = track?.write(pendingAudio, pendingHead, contiguous, AudioTrack.WRITE_NON_BLOCKING) ?: 0
                     if (written > 0) {
                         pendingHead = (pendingHead + written).mod(pendingAudio.size)
                         pendingCount -= written

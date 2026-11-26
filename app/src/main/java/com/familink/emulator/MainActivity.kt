@@ -25,6 +25,8 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.consumeAllChanges
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
@@ -144,6 +146,12 @@ class MainActivity : ComponentActivity() {
         var roomError by remember { mutableStateOf("") }
         var busy by remember { mutableStateOf(false) }
         val btDevices by btNamesState
+
+        LaunchedEffect(roomInfo?.get("guestAccessStatus"), roomCode, tab, rom) {
+            if (tab == "Online" && roomCode.isNotBlank() && rom != null && roomInfo?.get("guestAccessStatus") == "approved") {
+                requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
+            }
+        }
 
         BackHandler(enabled = (rom != null && isLandscape) || tab != "Jogar") {
             requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
@@ -313,7 +321,7 @@ class MainActivity : ComponentActivity() {
                             }
                         }
                     }
-                    "Online", "Local" -> Column(Modifier.fillMaxSize().padding(16.dp)) {
+                    "Online", "Local" -> Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp)) {
                         Text(if (tab == "Online") "Netplay Online" else "Netplay Local", color = Color.White, fontSize = 21.sp, fontWeight = FontWeight.Bold)
                         Text(if (tab == "Online") "Entre com sua conta para criar ou localizar uma sala." else "Modo local para dois jogadores no mesmo aparelho.", color = Muted, fontSize = 12.sp)
                         Spacer(Modifier.height(14.dp))
@@ -349,8 +357,10 @@ class MainActivity : ComponentActivity() {
                                     if (!doc.exists()) { roomError="Sala não encontrada."; busy=false }
                                     else {
                                         val hash=doc.getString("romHash") ?: ""; val region=doc.getString("romRegion") ?: ""
-                                        if (hash != active.sha256 || region != active.region.name) { roomError="A ROM precisa ser idêntica (SHA-256) e da mesma região da sala."; busy=false }
-                                        else doc.reference.update(mapOf("guestUid" to (user?.uid ?: ""), "guestName" to (user?.email?.substringBefore("@") ?: "P2"), "guestRomHash" to active.sha256, "guestRomRegion" to active.region.name, "guestAccessStatus" to "pending", "updatedAt" to FieldValue.serverTimestamp())).addOnSuccessListener { busy=false }.addOnFailureListener { e->roomError=e.localizedMessage ?: "Falha ao entrar";busy=false }
+                                        val console = doc.getString("consoleId") ?: ""
+                                        if (hash != active.sha256 || region != active.region.name || console != active.coreSpec.id) { roomError="A ROM precisa ser a mesma, do mesmo sistema e da mesma região da sala."; busy=false }
+                                        else if (doc.getString("hostUid") == user?.uid) { roomError="P1 não pode entrar na própria sala como P2."; busy=false }
+                                        else doc.reference.update(mapOf("guestUid" to (user?.uid ?: ""), "guestName" to (user?.email?.substringBefore("@") ?: "P2"), "guestRomHash" to active.sha256, "guestRomRegion" to active.region.name, "guestAccessStatus" to "pending", "updatedAt" to FieldValue.serverTimestamp())).addOnSuccessListener { busy=false; roomError="P2 entrou na sala. Aguarde P1 liberar o acesso." }.addOnFailureListener { e->roomError=e.localizedMessage ?: "Falha ao entrar";busy=false }
                                     }
                                 }.addOnFailureListener { e->roomError=e.localizedMessage ?: "Falha ao procurar sala";busy=false }
                             }) { Text("Entrar na sala") }
@@ -360,7 +370,11 @@ class MainActivity : ComponentActivity() {
                                     Text("ROM: ${roomInfo?.get("romName") ?: ""} · ${roomInfo?.get("romRegion") ?: ""}", color=Muted, fontSize=11.sp)
                                     Text("P2: ${roomInfo?.get("guestName")?.takeIf { it.toString().isNotBlank() } ?: "aguardando"} · ${roomInfo?.get("guestAccessStatus") ?: ""}", color=Muted, fontSize=11.sp)
                                     if (roomInfo?.get("hostUid") == user?.uid && roomInfo?.get("guestUid").toString().isNotBlank()) {
-                                        Button(onClick = { db.collection("rooms").document(roomCode).update(mapOf("guestAccessStatus" to "approved", "status" to "playing", "updatedAt" to FieldValue.serverTimestamp())) }, colors=ButtonDefaults.buttonColors(containerColor=Color(0xFF059669))) { Text("Liberar P2") }
+                                        Button(enabled = roomInfo?.get("guestAccessStatus") != "approved", onClick = {
+                                            db.collection("rooms").document(roomCode).update(mapOf("guestAccessStatus" to "approved", "status" to "playing", "updatedAt" to FieldValue.serverTimestamp()))
+                                                .addOnSuccessListener { roomError = "P2 liberado. A ROM será aberta neste aparelho e no aparelho de P2." }
+                                                .addOnFailureListener { e -> roomError = e.localizedMessage ?: "Falha ao liberar P2" }
+                                        }, colors=ButtonDefaults.buttonColors(containerColor=Color(0xFF059669))) { Text(if (roomInfo?.get("guestAccessStatus") == "approved") "P2 liberado" else "Liberar P2") }
                                     }
                                     Text("A sala e a validação da ROM já usam sua conta; a sincronização ao vivo dos controles ainda precisa ser portada para esta versão nativa.", color=Color(0xFFFFC857), fontSize=10.sp, modifier=Modifier.padding(top=6.dp))
                                 } }

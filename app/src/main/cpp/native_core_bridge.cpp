@@ -152,6 +152,11 @@ Java_com_familink_emulator_NativeCoreBridge_nativeLoadCore(JNIEnv* env, jobject,
     if (g_set_audio_batch) g_set_audio_batch(audio_batch_cb);
     g_set_input_poll(input_poll_cb);
     g_set_input_state(input_state_cb);
+    // Reset per-core video state so a newly selected Mega Drive/other core cannot inherit stale format.
+    g_pixel_format = 2;
+    g_width = 256;
+    g_height = 240;
+    g_pixels.clear();
     g_retro_init();
     if (g_retro_get_system_av_info) {
         retro_system_av_info info{};
