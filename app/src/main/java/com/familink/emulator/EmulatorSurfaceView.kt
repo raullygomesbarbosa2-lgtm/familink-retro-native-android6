@@ -5,7 +5,6 @@ import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
-import android.graphics.Rect
 import android.graphics.RectF
 import android.media.AudioAttributes
 import android.media.AudioFormat
@@ -22,7 +21,6 @@ class EmulatorSurfaceView(context: Context) : View(context) {
     private val audio = ShortArray(4096)
     private val paint = Paint(Paint.FILTER_BITMAP_FLAG)
     private val target = RectF()
-    private val source = Rect()
 
     @Volatile var p1Mask: Int = 0
     @Volatile var p2Mask: Int = 0
@@ -91,20 +89,15 @@ class EmulatorSurfaceView(context: Context) : View(context) {
         synchronized(frameLock) {
             val bitmap = frameBitmap ?: return
             if (width <= 0 || height <= 0 || bitmap.width <= 0 || bitmap.height <= 0) return
-            // Center-crop the console frame into the whole game viewport: no letterbox bars.
-            val viewRatio = width.toFloat() / height.toFloat()
-            val frameRatio = bitmap.width.toFloat() / bitmap.height.toFloat()
-            if (frameRatio > viewRatio) {
-                val cropWidth = bitmap.height * viewRatio
-                val left = (bitmap.width - cropWidth) / 2f
-                source.set(left.toInt().coerceIn(0, bitmap.width - 1), 0, (left + cropWidth).toInt().coerceIn(1, bitmap.width), bitmap.height)
-            } else {
-                val cropHeight = bitmap.width / viewRatio
-                val top = (bitmap.height - cropHeight) / 2f
-                source.set(0, top.toInt().coerceIn(0, bitmap.height - 1), bitmap.width, (top + cropHeight).toInt().coerceIn(1, bitmap.height))
-            }
-            target.set(0f, 0f, width.toFloat(), height.toFloat())
-            canvas.drawBitmap(bitmap, source, target, paint)
+            // Fit the complete game frame into the available phone viewport.
+            // Preserve the original aspect ratio: never crop or stretch the game image.
+            val scale = minOf(width.toFloat() / bitmap.width, height.toFloat() / bitmap.height)
+            val drawWidth = bitmap.width * scale
+            val drawHeight = bitmap.height * scale
+            val left = (width - drawWidth) / 2f
+            val top = (height - drawHeight) / 2f
+            target.set(left, top, left + drawWidth, top + drawHeight)
+            canvas.drawBitmap(bitmap, null, target, paint)
         }
     }
 
