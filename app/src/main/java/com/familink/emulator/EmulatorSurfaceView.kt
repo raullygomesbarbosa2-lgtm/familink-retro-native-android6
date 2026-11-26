@@ -19,8 +19,9 @@ class EmulatorSurfaceView(context: Context) : View(context) {
     private var renderThread: Thread? = null
     private val pixels = IntArray(640 * 480)
     private val audio = ShortArray(4096)
-    private val paint = Paint().apply { isFilterBitmap = false }
+    private val paint = Paint(Paint.FILTER_BITMAP_FLAG)
     private val target = RectF()
+    private val source = RectF()
 
     @Volatile var p1Mask: Int = 0
     @Volatile var p2Mask: Int = 0
@@ -88,11 +89,21 @@ class EmulatorSurfaceView(context: Context) : View(context) {
         canvas.drawColor(Color.BLACK)
         synchronized(frameLock) {
             val bitmap = frameBitmap ?: return
-            val scale = minOf(width.toFloat() / bitmap.width, height.toFloat() / bitmap.height)
-            val drawW = bitmap.width * scale
-            val drawH = bitmap.height * scale
-            target.set((width - drawW) / 2f, (height - drawH) / 2f, (width + drawW) / 2f, (height + drawH) / 2f)
-            canvas.drawBitmap(bitmap, null, target, paint)
+            if (width <= 0 || height <= 0 || bitmap.width <= 0 || bitmap.height <= 0) return
+            // Center-crop the console frame into the whole game viewport: no letterbox bars.
+            val viewRatio = width.toFloat() / height.toFloat()
+            val frameRatio = bitmap.width.toFloat() / bitmap.height.toFloat()
+            if (frameRatio > viewRatio) {
+                val cropWidth = bitmap.height * viewRatio
+                val left = (bitmap.width - cropWidth) / 2f
+                source.set(left, 0f, left + cropWidth, bitmap.height.toFloat())
+            } else {
+                val cropHeight = bitmap.width / viewRatio
+                val top = (bitmap.height - cropHeight) / 2f
+                source.set(0f, top, bitmap.width.toFloat(), top + cropHeight)
+            }
+            target.set(0f, 0f, width.toFloat(), height.toFloat())
+            canvas.drawBitmap(bitmap, source, target, paint)
         }
     }
 
