@@ -174,7 +174,6 @@ class MainActivity : ComponentActivity() {
         var targetFps by remember { mutableIntStateOf(60) }
         var search by remember { mutableStateOf("") }
         var library by remember { mutableStateOf(RomLibrary.list(ctx)) }
-        var cloudStatus by remember { mutableStateOf("Biblioteca local neste aparelho") }
         var selectedCoreId by remember { mutableStateOf<String?>(null) }
         var busy by remember { mutableStateOf(false) }
         val btDevices by btNamesState
@@ -189,14 +188,7 @@ class MainActivity : ComponentActivity() {
             auth.addAuthStateListener(listener)
             onDispose { auth.removeAuthStateListener(listener) }
         }
-        LaunchedEffect(user?.uid) {
-            library = RomLibrary.list(ctx)
-            val uid = user?.uid
-            if (uid != null) {
-                cloudStatus = "Verificando biblioteca vinculada à conta…"
-                CloudRomSync.sync(NativeFirebase.initialize(ctx), ctx, db, uid) { msg -> runOnUiThread { cloudStatus = msg; library = RomLibrary.list(ctx) } }
-            }
-        }
+        LaunchedEffect(user?.uid) { library = RomLibrary.list(ctx) }
 
 
         fun loadArchive(archiveName: String, archiveBytes: ByteArray, coreId: String?, saveToLibrary: Boolean) {
@@ -362,10 +354,8 @@ class MainActivity : ComponentActivity() {
                         Text("ZIPs guardados para abrir como em um launcher.", color = Muted, fontSize = 11.sp)
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(top=8.dp, bottom=8.dp)) {
                             Button(onClick = { if (selectedCoreId == null) { status = "Escolha o sistema em Núcleos antes de importar o ZIP."; tab = "Núcleos" } else romPicker.launch(arrayOf("application/zip", "application/x-zip-compressed", "application/octet-stream")) }, enabled = !busy, colors = ButtonDefaults.buttonColors(containerColor = Accent)) { Text("Adicionar ZIP") }
-                            OutlinedButton(onClick = { library = RomLibrary.list(ctx); user?.uid?.let { uid -> cloudStatus = "Sincronizando biblioteca…"; CloudRomSync.sync(NativeFirebase.initialize(ctx), ctx, db, uid) { msg -> runOnUiThread { cloudStatus = msg; library = RomLibrary.list(ctx) } } } ?: run { cloudStatus = "Entre com sua conta de e-mail para sincronizar." } }) { Text("Sincronizar conta") }
                         }
-                        Text(cloudStatus, color = Muted, fontSize = 10.sp)
-                        if (user == null) Text("Entre com a mesma conta de e-mail para vincular a biblioteca.", color = Color(0xFFFFC857), fontSize = 11.sp, modifier=Modifier.padding(vertical=6.dp))
+                        Text("Os ZIPs ficam salvos somente neste aparelho. Guarde uma cópia fora do app para reinstalar depois.", color = Color(0xFFFFC857), fontSize = 11.sp, modifier=Modifier.padding(vertical=6.dp))
                         if (library.isEmpty()) {
                             Text("Ainda não há jogos. Vá em Núcleos, escolha um sistema e adicione um ZIP.", color=Muted, fontSize=12.sp, modifier=Modifier.padding(top=12.dp))
                         } else LazyColumn(verticalArrangement=Arrangement.spacedBy(8.dp), modifier=Modifier.padding(top=8.dp)) {
