@@ -12,9 +12,14 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.input.pointer.consumeAllChanges
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -52,6 +57,7 @@ class MainActivity : ComponentActivity() {
     private var surfaceRef: EmulatorSurfaceView? = null
     private var btMask = 0
     private var touchMask = 0
+    private var analogMask = 0
     private var localP2 = false
     private val btNamesState = mutableStateOf<List<String>>(emptyList())
 
@@ -67,7 +73,26 @@ class MainActivity : ComponentActivity() {
 
     private fun updateTouchBit(bit: Int, down: Boolean) {
         touchMask = if (down) (touchMask or (1 shl bit)) else (touchMask and (1 shl bit).inv())
-        if (localP2) surfaceRef?.p2Mask = touchMask else surfaceRef?.p1Mask = btMask or touchMask
+        if (localP2) surfaceRef?.p2Mask = touchMask or analogMask else surfaceRef?.p1Mask = btMask or touchMask or analogMask
+    }
+
+    private fun updateAnalog(x: Float, y: Float) {
+        val v = if (kotlin.math.abs(x) < 0.18f && kotlin.math.abs(y) < 0.18f) 0 else 1
+        analogMask = if (v == 0) 0 else {
+            var mask = 0
+            if (y < -0.45f) mask = mask or (1 shl 4)
+            if (y > 0.45f) mask = mask or (1 shl 5)
+            if (x < -0.45f) mask = mask or (1 shl 6)
+            if (x > 0.45f) mask = mask or (1 shl 7)
+            mask
+        }
+        if (localP2) {
+            surfaceRef?.p2AnalogX = x; surfaceRef?.p2AnalogY = y
+            surfaceRef?.p2Mask = touchMask or analogMask
+        } else {
+            surfaceRef?.p1AnalogX = x; surfaceRef?.p1AnalogY = y
+            surfaceRef?.p1Mask = btMask or touchMask or analogMask
+        }
     }
 
     @Suppress("DEPRECATION")
@@ -195,7 +220,7 @@ class MainActivity : ComponentActivity() {
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                             Button(onClick = { romPicker.launch(arrayOf("*/*")) }, enabled = !busy, colors = ButtonDefaults.buttonColors(containerColor = Accent)) { Text(if (busy) "Carregando…" else "Abrir ROM") }
                             OutlinedButton(onClick = { targetFps = if (targetFps == 30) 60 else 30 }) { Text("$targetFps FPS", color = Color.White) }
-                            TextButton(onClick = { localTwoPlayer = !localTwoPlayer; localP2 = localTwoPlayer; touchMask = 0 }) { Text(if (localTwoPlayer) "2 jogadores" else "Solo", color = if (localTwoPlayer) Color(0xFF34D399) else Color.White, fontSize = 11.sp) }
+                            TextButton(onClick = { localTwoPlayer = !localTwoPlayer; localP2 = localTwoPlayer; touchMask = 0; analogMask = 0; surfaceRef?.p1AnalogX = 0f; surfaceRef?.p1AnalogY = 0f; surfaceRef?.p2AnalogX = 0f; surfaceRef?.p2AnalogY = 0f }) { Text(if (localTwoPlayer) "2 jogadores" else "Solo", color = if (localTwoPlayer) Color(0xFF34D399) else Color.White, fontSize = 11.sp) }
                         }
                         Spacer(Modifier.height(9.dp))
                         Box(Modifier.fillMaxWidth().weight(1f).background(Color.Black, RoundedCornerShape(12.dp)), contentAlignment = Alignment.Center) {
@@ -210,11 +235,7 @@ class MainActivity : ComponentActivity() {
                         Text(if (btDevices.isEmpty()) "Controle Bluetooth/USB: aguardando" else "Controle conectado: ${btDevices.joinToString()}", color = if (btDevices.isEmpty()) Muted else Color(0xFF34D399), fontSize = 10.sp)
                         Spacer(Modifier.height(5.dp))
                         Row(Modifier.fillMaxWidth().background(Panel, RoundedCornerShape(14.dp)).padding(10.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                PadButton("▲", 4) { b, d -> updateTouchBit(b,d) }
-                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) { PadButton("◀",6){b,d->updateTouchBit(b,d)}; PadButton("▶",7){b,d->updateTouchBit(b,d)} }
-                                PadButton("▼",5){b,d->updateTouchBit(b,d)}
-                            }
+                            AnalogStick(onMove = { x, y -> updateAnalog(x, y) })
                             Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) { PadButton("SEL",2){b,d->updateTouchBit(b,d)}; PadButton("STR",3){b,d->updateTouchBit(b,d)} }
                             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                                 PadButton("△",8,Color(0xFF10B981)){b,d->updateTouchBit(b,d)}
@@ -345,6 +366,41 @@ class MainActivity : ComponentActivity() {
         KeyEvent.KEYCODE_DPAD_LEFT,KeyEvent.KEYCODE_A->6; KeyEvent.KEYCODE_DPAD_RIGHT,KeyEvent.KEYCODE_D->7
         KeyEvent.KEYCODE_BUTTON_Y->8; KeyEvent.KEYCODE_BUTTON_X->9; KeyEvent.KEYCODE_BUTTON_L1->10; KeyEvent.KEYCODE_BUTTON_R1->11
         KeyEvent.KEYCODE_BUTTON_L2->12; KeyEvent.KEYCODE_BUTTON_R2->13; else->-1
+    }
+}
+
+@Composable
+private fun AnalogStick(onMove: (Float, Float) -> Unit) {
+    var knob by remember { mutableStateOf(Offset.Zero) }
+    Canvas(
+        modifier = Modifier
+            .size(118.dp)
+            .pointerInput(Unit) {
+                val radius = size.minDimension * 0.34f
+                fun update(position: Offset) {
+                    val center = Offset(size.width / 2f, size.height / 2f)
+                    var dx = position.x - center.x
+                    var dy = position.y - center.y
+                    val length = kotlin.math.sqrt(dx * dx + dy * dy)
+                    if (length > radius) { dx = dx * radius / length; dy = dy * radius / length }
+                    knob = Offset(dx, dy)
+                    onMove((dx / radius).coerceIn(-1f, 1f), (dy / radius).coerceIn(-1f, 1f))
+                }
+                detectDragGestures(
+                    onDragStart = { update(it) },
+                    onDragEnd = { knob = Offset.Zero; onMove(0f, 0f) },
+                    onDragCancel = { knob = Offset.Zero; onMove(0f, 0f) },
+                    onDrag = { change, _ -> change.consumeAllChanges(); update(change.position) }
+                )
+            }
+    ) {
+        val center = Offset(size.width / 2f, size.height / 2f)
+        val outer = size.minDimension * 0.45f
+        drawCircle(color = Color(0xFF202838), radius = outer, center = center)
+        drawCircle(color = Color(0xFF64748B), radius = outer, center = center, style = Stroke(width = 2.dp.toPx()))
+        drawCircle(color = Color(0xFF39465C), radius = outer * 0.55f, center = center, style = Stroke(width = 1.dp.toPx()))
+        drawCircle(color = Color(0xFF0F172A), radius = outer * 0.36f, center = center + knob)
+        drawCircle(color = Color(0xFF38BDF8), radius = outer * 0.32f, center = center + knob, style = Stroke(width = 3.dp.toPx()))
     }
 }
 

@@ -31,6 +31,8 @@ static std::vector<uint32_t> g_pixels;
 static std::vector<int16_t> g_audio_ring;
 static uint32_t g_p1_mask = 0;
 static uint32_t g_p2_mask = 0;
+static float g_p1_analog_x = 0.f, g_p1_analog_y = 0.f;
+static float g_p2_analog_x = 0.f, g_p2_analog_y = 0.f;
 static unsigned g_width = 256;
 static unsigned g_height = 240;
 static unsigned g_pixel_format = 2; // Libretro: 0=0RGB1555, 1=XRGB8888, 2=RGB565
@@ -96,10 +98,18 @@ static size_t audio_batch_cb(const int16_t* data, size_t frames) {
 
 static void input_poll_cb(void) {}
 
-static int16_t input_state_cb(unsigned port, unsigned device, unsigned, unsigned id) {
-    if (device != 1) return 0; // RETRO_DEVICE_JOYPAD
-    uint32_t mask = (port == 0) ? g_p1_mask : (port == 1 ? g_p2_mask : 0);
-    return (mask & (1u << id)) ? 1 : 0;
+static int16_t input_state_cb(unsigned port, unsigned device, unsigned index, unsigned id) {
+    const uint32_t mask = (port == 0) ? g_p1_mask : (port == 1 ? g_p2_mask : 0);
+    if (device == 1) { // RETRO_DEVICE_JOYPAD, for cores which use digital directions.
+        return id < 32 && (mask & (1u << id)) ? 1 : 0;
+    }
+    if (device == 5 && index == 0) { // RETRO_DEVICE_ANALOG, left stick.
+        const float x = port == 0 ? g_p1_analog_x : (port == 1 ? g_p2_analog_x : 0.f);
+        const float y = port == 0 ? g_p1_analog_y : (port == 1 ? g_p2_analog_y : 0.f);
+        const float value = id == 0 ? x : (id == 1 ? y : 0.f);
+        return static_cast<int16_t>(value * 32767.f);
+    }
+    return 0;
 }
 
 extern "C" JNIEXPORT jboolean JNICALL
@@ -148,11 +158,24 @@ Java_com_familink_emulator_NativeCoreBridge_nativeLoadRomBytes(JNIEnv* env, jobj
 }
 
 extern "C" JNIEXPORT jint JNICALL
-Java_com_familink_emulator_NativeCoreBridge_nativeRunFrame(JNIEnv* env, jobject, jint p1Mask, jint p2Mask, jintArray outPixels) {
+Java_com_familink_emulator_NativeCoreBridge_nativeRunFrame(JNIEnv* env, jobject, jint p1Mask, jint p2Mask, jfloat p1AnalogX, jfloat p1AnalogY, jfloat p2AnalogX, jfloat p2AnalogY, jintArray outPixels) {
     if (!g_retro_run) return 0;
+    g_p1_analog_x = std::max(-1.f, std::min(1.f, static_cast<float>(p1AnalogX)));
+    g_p1_analog_y = std::max(-1.f, std::min(1.f, static_cast<float>(p1AnalogY)));
+    g_p2_analog_x = std::max(-1.f, std::min(1.f, static_cast<float>(p2AnalogX)));
+    g_p2_analog_y = std::max(-1.f, std::min(1.f, static_cast<float>(p2AnalogY)));
     g_p1_mask = static_cast<uint32_t>(p1Mask);
     g_p2_mask = static_cast<uint32_t>(p2Mask);
+    if (g_p1_analog_y < -0.45f) g_p1_mask |= (1u << 4);
+    if (g_p1_analog_y > 0.45f) g_p1_mask |= (1u << 5);
+    if (g_p1_analog_x < -0.45f) g_p1_mask |= (1u << 6);
+    if (g_p1_analog_x > 0.45f) g_p1_mask |= (1u << 7);
+    if (g_p2_analog_y < -0.45f) g_p2_mask |= (1u << 4);
+    if (g_p2_analog_y > 0.45f) g_p2_mask |= (1u << 5);
+    if (g_p2_analog_x < -0.45f) g_p2_mask |= (1u << 6);
+    if (g_p2_analog_x > 0.45f) g_p2_mask |= (1u << 7);
     g_retro_run();
+    if (g_pixels.empty()) return 0; // Do not present a fabricated blank frame before a core draws.
     jsize maxLen = env->GetArrayLength(outPixels);
     jsize copyCount = std::min<jsize>(maxLen, static_cast<jsize>(g_pixels.size()));
     if (copyCount > 0) {
