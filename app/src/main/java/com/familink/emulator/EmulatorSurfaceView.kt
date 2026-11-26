@@ -10,6 +10,7 @@ import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioTrack
 import android.view.View
+import android.os.Process
 
 /** Software Canvas renderer: avoids SurfaceView being hidden by Compose layers on older Android. */
 class EmulatorSurfaceView(context: Context) : View(context) {
@@ -19,7 +20,11 @@ class EmulatorSurfaceView(context: Context) : View(context) {
     private var renderThread: Thread? = null
     private val pixels = IntArray(640 * 480)
     private val audio = ShortArray(4096)
-    private val paint = Paint(Paint.FILTER_BITMAP_FLAG)
+    private val pendingAudio = ShortArray(16384)
+    private var pendingHead = 0
+    private var pendingCount = 0
+    // Nearest-neighbor scaling is both sharper for pixel art and cheaper on older phones.
+    private val paint = Paint().apply { isFilterBitmap = false }
     private val target = RectF()
 
     @Volatile var p1Mask: Int = 0
@@ -28,7 +33,7 @@ class EmulatorSurfaceView(context: Context) : View(context) {
     @Volatile var p1AnalogY: Float = 0f
     @Volatile var p2AnalogX: Float = 0f
     @Volatile var p2AnalogY: Float = 0f
-    @Volatile var targetFps: Int = 30
+    @Volatile var targetFps: Int = 60
 
     init { setBackgroundColor(Color.BLACK); isFocusable = true }
 
@@ -42,6 +47,7 @@ class EmulatorSurfaceView(context: Context) : View(context) {
     private fun renderLoop() {
         var track: AudioTrack? = null
         try {
+            Process.setThreadPriority(Process.THREAD_PRIORITY_DISPLAY)
             track = AudioTrack.Builder()
                 .setAudioAttributes(AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_GAME).build())
                 .setAudioFormat(AudioFormat.Builder().setEncoding(AudioFormat.ENCODING_PCM_16BIT).setSampleRate(44100).setChannelMask(AudioFormat.CHANNEL_OUT_STEREO).build())
@@ -68,8 +74,32 @@ class EmulatorSurfaceView(context: Context) : View(context) {
                     }
                     postInvalidateOnAnimation()
                 }
-                val samples = NativeCoreBridge.nativeReadAudio(audio)
-                if (samples > 0) track.write(audio, 0, samples)
+                // Feed native core audio without allowing an AudioTrack write to stall video frames.
+                val incoming = NativeCoreBridge.nativeReadAudio(audio).coerceIn(0, audio.size)
+                if (incoming > 0) {
+                    if (pendingCount + incoming > pendingAudio.size) {
+                        val drop = pendingCount + incoming - pendingAudio.size
+                        pendingHead = (pendingHead + drop).mod(pendingAudio.size)
+                        pendingCount -= drop
+                    }
+                    var tail = (pendingHead + pendingCount).mod(pendingAudio.size)
+                    var copied = 0
+                    while (copied < incoming) {
+                        val chunk = minOf(incoming - copied, pendingAudio.size - tail)
+                        System.arraycopy(audio, copied, pendingAudio, tail, chunk)
+                        copied += chunk
+                        tail = (tail + chunk).mod(pendingAudio.size)
+                    }
+                    pendingCount += incoming
+                }
+                if (pendingCount > 0) {
+                    val contiguous = minOf(pendingCount, pendingAudio.size - pendingHead)
+                    val written = track.write(pendingAudio, pendingHead, contiguous, AudioTrack.WRITE_NON_BLOCKING)
+                    if (written > 0) {
+                        pendingHead = (pendingHead + written).mod(pendingAudio.size)
+                        pendingCount -= written
+                    }
+                }
                 val budget = if (targetFps >= 60) 16_666_667L else 33_333_333L
                 val remain = budget - (System.nanoTime() - frameStart)
                 if (remain > 0) Thread.sleep(remain / 1_000_000, (remain % 1_000_000).toInt())

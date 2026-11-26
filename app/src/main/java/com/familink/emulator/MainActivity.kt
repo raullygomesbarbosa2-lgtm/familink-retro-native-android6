@@ -127,7 +127,7 @@ class MainActivity : ComponentActivity() {
         var tab by remember { mutableStateOf("Jogar") }
         var rom by remember { mutableStateOf<VerifiedRom?>(null) }
         var status by remember { mutableStateOf("Carregue uma ROM sua para jogar") }
-        var targetFps by remember { mutableIntStateOf(30) }
+        var targetFps by remember { mutableIntStateOf(60) }
         var localTwoPlayer by remember { mutableStateOf(false) }
         var search by remember { mutableStateOf("") }
         var selectedCoreId by remember { mutableStateOf<String?>(null) }
