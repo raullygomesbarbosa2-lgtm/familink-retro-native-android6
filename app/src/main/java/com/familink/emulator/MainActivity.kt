@@ -1,24 +1,26 @@
 package com.familink.emulator
 
 import android.content.Context
-import android.view.View
-import java.net.HttpURLConnection
-import java.net.URL
-import java.util.zip.ZipInputStream
 import android.hardware.input.InputManager
-import android.os.Bundle
 import android.os.Build
+import android.os.Bundle
 import android.view.InputDevice
 import android.view.KeyEvent
 import android.view.MotionEvent
+import android.view.View
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -26,259 +28,350 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import com.google.firebase.auth.FirebaseAuth
+import com.google.firebase.auth.FirebaseUser
+import com.google.firebase.firestore.FieldValue
+import com.google.firebase.firestore.FirebaseFirestore
 import java.io.File
+import java.net.HttpURLConnection
+import java.net.URL
+import java.util.zip.ZipInputStream
+
+private val Bg = Color(0xFF0B0E14)
+private val Panel = Color(0xFF12161F)
+private val Accent = Color(0xFFE11D48)
+private val Muted = Color(0xFF9CA3AF)
 
 class MainActivity : ComponentActivity() {
     private var surfaceRef: EmulatorSurfaceView? = null
     private var btMask = 0
     private var touchMask = 0
+    private var localP2 = false
     private val btNamesState = mutableStateOf<List<String>>(emptyList())
 
     private fun refreshBluetoothPads() {
         val im = getSystemService(Context.INPUT_SERVICE) as InputManager
         btNamesState.value = im.inputDeviceIds.toList().mapNotNull { id ->
             val dev = InputDevice.getDevice(id) ?: return@mapNotNull null
-            val isPad = (dev.sources and InputDevice.SOURCE_GAMEPAD) == InputDevice.SOURCE_GAMEPAD ||
+            val pad = (dev.sources and InputDevice.SOURCE_GAMEPAD) == InputDevice.SOURCE_GAMEPAD ||
                 (dev.sources and InputDevice.SOURCE_JOYSTICK) == InputDevice.SOURCE_JOYSTICK
-            if (isPad) dev.name else null
+            if (pad) dev.name else null
         }
     }
 
     private fun updateTouchBit(bit: Int, down: Boolean) {
         touchMask = if (down) (touchMask or (1 shl bit)) else (touchMask and (1 shl bit).inv())
-        surfaceRef?.p1Mask = btMask or touchMask
+        if (localP2) surfaceRef?.p2Mask = touchMask else surfaceRef?.p1Mask = btMask or touchMask
     }
 
     @Suppress("DEPRECATION")
-    private fun enterImmersiveMode() {
-        window.decorView.systemUiVisibility = (View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY or
+    private fun immersive() {
+        window.decorView.systemUiVisibility = View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY or
             View.SYSTEM_UI_FLAG_FULLSCREEN or View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or
             View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN or View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION or
-            View.SYSTEM_UI_FLAG_LAYOUT_STABLE)
+            View.SYSTEM_UI_FLAG_LAYOUT_STABLE
     }
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
-        if (hasFocus) enterImmersiveMode()
+        if (hasFocus) immersive()
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        enterImmersiveMode()
+        immersive()
         refreshBluetoothPads()
-
-        setContent {
-            val ctx = LocalContext.current
-            var loadedRom by remember { mutableStateOf<VerifiedRom?>(null) }
-            var targetFps by remember { mutableStateOf(30) }
-            var statusMsg by remember { mutableStateOf("Sem jogos de exemplo · Selecione sua ROM") }
-            val btDevices by btNamesState
-
-            val romPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-                if (uri != null) {
-                    Thread {
-                        try {
-                            val rom = RomVerifier.loadFromUri(ctx, uri)
-                            val coreFile = File(ctx.filesDir, "cores/${rom.coreSpec.nativeSoName}")
-                            if (!coreFile.exists()) {
-                                coreFile.parentFile?.mkdirs()
-                                val nativeAbi = Build.SUPPORTED_ABIS.firstOrNull { it == "arm64-v8a" || it == "armeabi-v7a" || it == "x86_64" } ?: "arm64-v8a"
-                                val coreUrl = rom.coreSpec.buildbotZipUrl.replace("/arm64-v8a/", "/$nativeAbi/")
-                                val connection = (URL(coreUrl).openConnection() as HttpURLConnection).apply {
-                                    connectTimeout = 20000
-                                    readTimeout = 60000
-                                }
-                                connection.inputStream.use { input ->
-                                    ZipInputStream(input).use { zip ->
-                                        var found = false
-                                        var entry = zip.nextEntry
-                                        while (entry != null) {
-                                            if (!entry.isDirectory && entry.name.endsWith(".so")) {
-                                                coreFile.outputStream().use { output -> zip.copyTo(output) }
-                                                found = true
-                                                break
-                                            }
-                                            entry = zip.nextEntry
-                                        }
-                                        if (!found) throw IllegalStateException("O pacote do núcleo veio sem arquivo .so.")
-                                    }
-                                }
-                                connection.disconnect()
-                            }
-                            NativeCoreBridge.nativeUnload()
-                            if (!NativeCoreBridge.nativeLoadCore(coreFile.absolutePath)) throw IllegalStateException("Falha ao carregar o núcleo nativo ${rom.coreSpec.nativeSoName}.")
-                            if (!NativeCoreBridge.nativeLoadRomBytes(rom.fileName, rom.bytes)) throw IllegalStateException("O núcleo não aceitou esta ROM.")
-                            runOnUiThread {
-                                loadedRom = rom
-                                statusMsg = "${rom.coreSpec.consoleName} · ${rom.region} · SHA256 ${rom.sha256.take(10)}"
-                            }
-                        } catch (err: Exception) {
-                            runOnUiThread { statusMsg = err.message ?: "Erro ao carregar ROM" }
-                        }
-                    }.start()
-                }
-            }
-
-            Column(modifier = Modifier.fillMaxSize().background(Color(0xFF0B0E14)).padding(12.dp)) {
-                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text("FamiLink Nativo (Android SDK)", color = Color.White, style = MaterialTheme.typography.titleMedium)
-                        Text(statusMsg, color = Color(0xFF9CA3AF), style = MaterialTheme.typography.bodySmall)
-                        Text(
-                            if (btDevices.isEmpty()) "Bluetooth: Aguardando controle (auto)"
-                            else "Bluetooth ativo: ${btDevices.joinToString()}",
-                            color = if (btDevices.isEmpty()) Color(0xFF38BDF8) else Color(0xFF34D399),
-                            style = MaterialTheme.typography.labelSmall
-                        )
-                    }
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                        OutlinedButton(onClick = { targetFps = if (targetFps == 30) 60 else 30 }) {
-                            Text(if (targetFps == 30) "30 FPS" else "60 FPS", color = Color.White)
-                        }
-                        Button(onClick = { romPicker.launch(arrayOf("*/*")) }) {
-                            Text("Abrir ROM")
-                        }
-                    }
-                }
-
-                Spacer(Modifier.height(8.dp))
-
-                Box(modifier = Modifier.fillMaxWidth().weight(1f).background(Color.Black)) {
-                    if (loadedRom != null) {
-                        AndroidView(
-                            factory = { context ->
-                                EmulatorSurfaceView(context).also {
-                                    it.targetFps = targetFps
-                                    surfaceRef = it
-                                }
-                            },
-                            update = { view -> view.targetFps = targetFps },
-                            modifier = Modifier.fillMaxSize()
-                        )
-                    }
-                }
-
-                Spacer(Modifier.height(8.dp))
-
-                // Controle PlayStation na tela ativo automaticamente logo ao abrir
-                Row(
-                    modifier = Modifier.fillMaxWidth().background(Color(0xFF12161F)).padding(10.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    // D-Pad
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        PsPadButton("▲", 4) { bit, down -> updateTouchBit(bit, down) }
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            PsPadButton("◀", 6) { bit, down -> updateTouchBit(bit, down) }
-                            PsPadButton("▶", 7) { bit, down -> updateTouchBit(bit, down) }
-                        }
-                        PsPadButton("▼", 5) { bit, down -> updateTouchBit(bit, down) }
-                    }
-
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        PsPadButton("SEL", 2) { bit, down -> updateTouchBit(bit, down) }
-                        PsPadButton("STR", 3) { bit, down -> updateTouchBit(bit, down) }
-                    }
-
-                    // Botões PlayStation (△ ○ ✕ □)
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        PsPadButton("△", 8, Color(0xFF10B981)) { bit, down -> updateTouchBit(bit, down) }
-                        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                            PsPadButton("□", 9, Color(0xFFEC4899)) { bit, down -> updateTouchBit(bit, down) }
-                            PsPadButton("○", 0, Color(0xFFEF4444)) { bit, down -> updateTouchBit(bit, down) }
-                        }
-                        PsPadButton("✕", 1, Color(0xFF3B82F6)) { bit, down -> updateTouchBit(bit, down) }
-                    }
-                }
-            }
-        }
+        NativeFirebase.initialize(this)
+        setContent { FamiLinkApp() }
     }
 
     @Composable
-    private fun PsPadButton(
-        label: String,
-        bit: Int,
-        tint: Color = Color.White,
-        onTouch: (Int, Boolean) -> Unit
-    ) {
-        Box(
-            contentAlignment = Alignment.Center,
-            modifier = Modifier
-                .size(44.dp)
-                .background(Color(0xFF1D2332), CircleShape)
-                .pointerInput(bit) {
-                    detectTapGestures(
-                        onPress = {
-                            onTouch(bit, true)
-                            tryAwaitRelease()
-                            onTouch(bit, false)
-                        }
-                    )
-                }
-        ) {
-            Text(label, color = tint, style = MaterialTheme.typography.labelLarge)
+    private fun FamiLinkApp() {
+        val ctx = LocalContext.current
+        val auth = remember { FirebaseAuth.getInstance() }
+        val db = remember { FirebaseFirestore.getInstance(NativeFirebase.initialize(ctx), NativeFirebase.databaseId()) }
+        var user by remember { mutableStateOf(auth.currentUser) }
+        var authDialog by remember { mutableStateOf(false) }
+        var authMode by remember { mutableStateOf("login") }
+        var tab by remember { mutableStateOf("Jogar") }
+        var rom by remember { mutableStateOf<VerifiedRom?>(null) }
+        var status by remember { mutableStateOf("Carregue uma ROM sua para jogar") }
+        var targetFps by remember { mutableIntStateOf(30) }
+        var localTwoPlayer by remember { mutableStateOf(false) }
+        var search by remember { mutableStateOf("") }
+        var roomCode by remember { mutableStateOf("") }
+        var roomInfo by remember { mutableStateOf<Map<String, Any>?>(null) }
+        var roomError by remember { mutableStateOf("") }
+        var busy by remember { mutableStateOf(false) }
+        val btDevices by btNamesState
+
+        DisposableEffect(auth) {
+            val listener = FirebaseAuth.AuthStateListener { instance -> user = instance.currentUser }
+            auth.addAuthStateListener(listener)
+            onDispose { auth.removeAuthStateListener(listener) }
         }
+        DisposableEffect(roomCode, user?.uid) {
+            if (roomCode.isBlank() || user == null) { roomInfo = null; onDispose { } }
+            else {
+                val reg = db.collection("rooms").document(roomCode).addSnapshotListener { snap, err ->
+                    if (err != null) roomError = err.localizedMessage ?: "Falha ao atualizar sala"
+                    else roomInfo = if (snap != null && snap.exists()) snap.data else null
+                }
+                onDispose { reg.remove() }
+            }
+        }
+
+        val romPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+            if (uri != null) {
+                busy = true
+                status = "Lendo ROM e preparando o núcleo nativo…"
+                Thread {
+                    try {
+                        val loaded = RomVerifier.loadFromUri(ctx, uri)
+                        val coreFile = File(ctx.filesDir, "cores/${loaded.coreSpec.nativeSoName}")
+                        if (!coreFile.exists()) {
+                            coreFile.parentFile?.mkdirs()
+                            val abi = Build.SUPPORTED_ABIS.firstOrNull { it == "arm64-v8a" || it == "armeabi-v7a" || it == "x86_64" } ?: "arm64-v8a"
+                            val url = loaded.coreSpec.buildbotZipUrl.replace("/arm64-v8a/", "/$abi/")
+                            val connection = URL(url).openConnection() as HttpURLConnection
+                            connection.connectTimeout = 20000; connection.readTimeout = 60000
+                            connection.inputStream.use { input -> ZipInputStream(input).use { zip ->
+                                var entry = zip.nextEntry; var found = false
+                                while (entry != null) {
+                                    if (!entry.isDirectory && entry.name.endsWith(".so")) {
+                                        coreFile.outputStream().use { output -> zip.copyTo(output) }; found = true; break
+                                    }
+                                    entry = zip.nextEntry
+                                }
+                                if (!found) error("Pacote do núcleo não contém uma biblioteca .so")
+                            } }
+                            connection.disconnect()
+                        }
+                        NativeCoreBridge.nativeUnload()
+                        check(NativeCoreBridge.nativeLoadCore(coreFile.absolutePath)) { "Não consegui abrir o núcleo ${loaded.coreSpec.nativeSoName}" }
+                        check(NativeCoreBridge.nativeLoadRomBytes(loaded.fileName, loaded.bytes)) { "O núcleo não aceitou essa ROM" }
+                        runOnUiThread { rom = loaded; status = "${loaded.coreSpec.consoleName} · ${loaded.region} · ${loaded.fileName}"; busy = false }
+                    } catch (e: Exception) {
+                        runOnUiThread { status = e.message ?: "Erro ao carregar ROM"; busy = false }
+                    }
+                }.start()
+            }
+        }
+
+        MaterialTheme(colorScheme = darkColorScheme(primary = Accent, background = Bg, surface = Panel)) {
+            Column(Modifier.fillMaxSize().background(Bg)) {
+                Row(Modifier.fillMaxWidth().background(Panel).padding(horizontal = 16.dp, vertical = 11.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text("FamiLink", color = Color.White, fontSize = 21.sp, fontWeight = FontWeight.Bold)
+                        Text("Android nativo · SDK", color = Muted, fontSize = 11.sp)
+                    }
+                    if (user == null) {
+                        Button(onClick = { authMode = "login"; authDialog = true }, colors = ButtonDefaults.buttonColors(containerColor = Accent)) { Text("Entrar com e-mail", fontSize = 12.sp) }
+                    } else {
+                        Column(horizontalAlignment = Alignment.End, modifier = Modifier.clickable { auth.signOut(); roomCode = "" }) {
+                            Text(user?.email ?: "Conta", color = Color.White, fontSize = 11.sp, maxLines = 1)
+                            Text("Toque para sair", color = Muted, fontSize = 9.sp)
+                        }
+                    }
+                }
+                Row(Modifier.fillMaxWidth().background(Bg).padding(horizontal = 7.dp, vertical = 6.dp), horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+                    listOf("Jogar", "Online", "Local", "Núcleos").forEach { label ->
+                        TextButton(onClick = { tab = label }, modifier = Modifier.weight(1f), colors = ButtonDefaults.textButtonColors(containerColor = if (tab == label) Accent else Panel)) {
+                            Text(label, color = Color.White, fontSize = 11.sp, maxLines = 1)
+                        }
+                    }
+                }
+                when (tab) {
+                    "Jogar" -> Column(Modifier.fillMaxSize().padding(horizontal = 12.dp, vertical = 8.dp)) {
+                        Text(status, color = Muted, fontSize = 11.sp, maxLines = 2)
+                        Spacer(Modifier.height(8.dp))
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Button(onClick = { romPicker.launch(arrayOf("*/*")) }, enabled = !busy, colors = ButtonDefaults.buttonColors(containerColor = Accent)) { Text(if (busy) "Carregando…" else "Abrir ROM") }
+                            OutlinedButton(onClick = { targetFps = if (targetFps == 30) 60 else 30 }) { Text("$targetFps FPS", color = Color.White) }
+                            TextButton(onClick = { localTwoPlayer = !localTwoPlayer; localP2 = localTwoPlayer; touchMask = 0 }) { Text(if (localTwoPlayer) "2 jogadores" else "Solo", color = if (localTwoPlayer) Color(0xFF34D399) else Color.White, fontSize = 11.sp) }
+                        }
+                        Spacer(Modifier.height(9.dp))
+                        Box(Modifier.fillMaxWidth().weight(1f).background(Color.Black, RoundedCornerShape(12.dp)), contentAlignment = Alignment.Center) {
+                            if (rom == null) {
+                                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                    Text("FamiLink", color = Color(0xFF2A3140), fontSize = 32.sp, fontWeight = FontWeight.Bold)
+                                    Spacer(Modifier.height(6.dp)); Text("Escolha uma ROM para começar", color = Muted, fontSize = 12.sp)
+                                }
+                            } else AndroidView(factory = { c -> EmulatorSurfaceView(c).also { it.targetFps = targetFps; surfaceRef = it } }, update = { it.targetFps = targetFps }, modifier = Modifier.fillMaxSize())
+                        }
+                        Spacer(Modifier.height(9.dp))
+                        Text(if (btDevices.isEmpty()) "Controle Bluetooth/USB: aguardando" else "Controle conectado: ${btDevices.joinToString()}", color = if (btDevices.isEmpty()) Muted else Color(0xFF34D399), fontSize = 10.sp)
+                        Spacer(Modifier.height(5.dp))
+                        Row(Modifier.fillMaxWidth().background(Panel, RoundedCornerShape(14.dp)).padding(10.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                PadButton("▲", 4) { b, d -> updateTouchBit(b,d) }
+                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) { PadButton("◀",6){b,d->updateTouchBit(b,d)}; PadButton("▶",7){b,d->updateTouchBit(b,d)} }
+                                PadButton("▼",5){b,d->updateTouchBit(b,d)}
+                            }
+                            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) { PadButton("SEL",2){b,d->updateTouchBit(b,d)}; PadButton("STR",3){b,d->updateTouchBit(b,d)} }
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                PadButton("△",8,Color(0xFF10B981)){b,d->updateTouchBit(b,d)}
+                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) { PadButton("□",9,Color(0xFFEC4899)){b,d->updateTouchBit(b,d)}; PadButton("○",0,Color(0xFFEF4444)){b,d->updateTouchBit(b,d)} }
+                                PadButton("✕",1,Color(0xFF3B82F6)){b,d->updateTouchBit(b,d)}
+                            }
+                        }
+                    }
+                    "Núcleos" -> Column(Modifier.fillMaxSize().padding(12.dp)) {
+                        Text("Núcleos & ROMs · ${CoreRegistry.cores.size} sistemas", color = Color.White, fontSize = 19.sp, fontWeight = FontWeight.Bold)
+                        Text("Selecione uma ROM sua; o app baixa o núcleo compatível.", color = Muted, fontSize = 11.sp)
+                        Spacer(Modifier.height(8.dp))
+                        OutlinedTextField(search, { search = it }, modifier = Modifier.fillMaxWidth(), placeholder = { Text("Buscar console ou extensão") }, singleLine = true)
+                        Spacer(Modifier.height(8.dp))
+                        LazyColumn(verticalArrangement = Arrangement.spacedBy(7.dp)) {
+                            items(CoreRegistry.cores.filter { it.consoleName.contains(search, true) || it.id.contains(search, true) || it.extensions.any { e -> e.contains(search, true) } }) { core ->
+                                Column(Modifier.fillMaxWidth().background(Panel, RoundedCornerShape(10.dp)).padding(12.dp)) {
+                                    Text(core.consoleName, color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+                                    Text("ROM: ${core.extensions.joinToString()} · Núcleo: ${core.nativeSoName}", color = Muted, fontSize = 10.sp)
+                                }
+                            }
+                        }
+                    }
+                    "Online", "Local" -> Column(Modifier.fillMaxSize().padding(16.dp)) {
+                        Text(if (tab == "Online") "Netplay Online" else "Netplay Local", color = Color.White, fontSize = 21.sp, fontWeight = FontWeight.Bold)
+                        Text(if (tab == "Online") "Entre com sua conta para criar ou localizar uma sala." else "Modo local para dois jogadores no mesmo aparelho.", color = Muted, fontSize = 12.sp)
+                        Spacer(Modifier.height(14.dp))
+                        if (tab == "Local") {
+                            Button(onClick = { tab = "Jogar"; localTwoPlayer = true; localP2 = true }, colors = ButtonDefaults.buttonColors(containerColor = Accent)) { Text("Abrir jogo em modo local 2P") }
+                            Text("Carregue a ROM em Jogar e ative 2 jogadores para usar os controles locais.", color = Muted, fontSize = 11.sp, modifier = Modifier.padding(top=8.dp))
+                        } else if (user == null) {
+                            Card(colors = CardDefaults.cardColors(containerColor = Panel)) { Column(Modifier.padding(16.dp)) { Text("Conta necessária", color = Color.White, fontWeight = FontWeight.Bold); Text("Crie sua conta ou entre com e-mail e senha. Você também pode recuperar a senha por e-mail.", color = Muted, fontSize = 12.sp, modifier = Modifier.padding(vertical=8.dp)); Button(onClick = { authMode="login"; authDialog=true }, colors=ButtonDefaults.buttonColors(containerColor=Accent)) { Text("Entrar / criar conta") } } }
+                        } else {
+                            Text("Conectado como ${user?.email}", color = Color(0xFF34D399), fontSize = 11.sp)
+                            Text("ROM atual: ${rom?.fileName ?: "nenhuma carregada"}", color = Muted, fontSize = 11.sp, modifier = Modifier.padding(top=8.dp))
+                            Spacer(Modifier.height(12.dp))
+                            Button(enabled = !busy && rom != null, onClick = {
+                                busy = true; roomError = ""
+                                Thread {
+                                    val code = (1..6).map { "ABCDEFGHJKLMNPQRSTUVWXYZ23456789".random() }.joinToString("")
+                                    val active = rom
+                                    if (active == null) { runOnUiThread { busy=false; roomError="Carregue uma ROM antes de criar a sala." }; return@Thread }
+                                    val payload = hashMapOf<String, Any>("roomCode" to code, "hostUid" to (user?.uid ?: ""), "hostName" to (user?.email?.substringBefore("@") ?: "Host P1"), "guestUid" to "", "guestName" to "", "mode" to "remote", "consoleId" to active.coreSpec.id, "romName" to active.fileName, "romHash" to active.sha256, "romRegion" to active.region.name, "romSize" to active.bytes.size, "guestRomHash" to "", "guestRomRegion" to "NONE", "guestAccessStatus" to "empty", "status" to "waiting", "inputDelay" to 1, "createdAt" to FieldValue.serverTimestamp(), "updatedAt" to FieldValue.serverTimestamp())
+                                    db.collection("rooms").document(code).set(payload).addOnSuccessListener { roomCode=code;busy=false }.addOnFailureListener { e->roomError=e.localizedMessage ?: "Erro ao criar sala";busy=false }
+                                }.start()
+                            }, colors = ButtonDefaults.buttonColors(containerColor = Accent)) { Text(if (busy) "Aguarde…" else "Criar sala") }
+                            Spacer(Modifier.height(10.dp))
+                            OutlinedTextField(roomCode, { roomCode=it.uppercase().take(6) }, label={Text("Código da sala")}, singleLine=true)
+                            Button(enabled = !busy && roomCode.length == 6 && rom != null, onClick = {
+                                val code = roomCode.trim(); val active = rom ?: return@Button; busy=true; roomError=""
+                                db.collection("rooms").document(code).get().addOnSuccessListener { doc ->
+                                    if (!doc.exists()) { roomError="Sala não encontrada."; busy=false }
+                                    else {
+                                        val hash=doc.getString("romHash") ?: ""; val region=doc.getString("romRegion") ?: ""
+                                        if (hash != active.sha256 || region != active.region.name) { roomError="A ROM precisa ser idêntica (SHA-256) e da mesma região da sala."; busy=false }
+                                        else doc.reference.update(mapOf("guestUid" to (user?.uid ?: ""), "guestName" to (user?.email?.substringBefore("@") ?: "P2"), "guestRomHash" to active.sha256, "guestRomRegion" to active.region.name, "guestAccessStatus" to "pending", "updatedAt" to FieldValue.serverTimestamp())).addOnSuccessListener { busy=false }.addOnFailureListener { e->roomError=e.localizedMessage ?: "Falha ao entrar";busy=false }
+                                    }
+                                }.addOnFailureListener { e->roomError=e.localizedMessage ?: "Falha ao procurar sala";busy=false }
+                            }) { Text("Entrar na sala") }
+                            if (roomCode.isNotBlank() && roomInfo != null) {
+                                Spacer(Modifier.height(12.dp)); Card(colors = CardDefaults.cardColors(containerColor = Panel)) { Column(Modifier.padding(14.dp)) {
+                                    Text("Sala $roomCode · ${roomInfo?.get("status") ?: ""}", color=Color.White, fontWeight=FontWeight.Bold)
+                                    Text("ROM: ${roomInfo?.get("romName") ?: ""} · ${roomInfo?.get("romRegion") ?: ""}", color=Muted, fontSize=11.sp)
+                                    Text("P2: ${roomInfo?.get("guestName")?.takeIf { it.toString().isNotBlank() } ?: "aguardando"} · ${roomInfo?.get("guestAccessStatus") ?: ""}", color=Muted, fontSize=11.sp)
+                                    if (roomInfo?.get("hostUid") == user?.uid && roomInfo?.get("guestUid").toString().isNotBlank()) {
+                                        Button(onClick = { db.collection("rooms").document(roomCode).update(mapOf("guestAccessStatus" to "approved", "status" to "playing", "updatedAt" to FieldValue.serverTimestamp())) }, colors=ButtonDefaults.buttonColors(containerColor=Color(0xFF059669))) { Text("Liberar P2") }
+                                    }
+                                    Text("A sala e a validação da ROM já usam sua conta; a sincronização ao vivo dos controles ainda precisa ser portada para esta versão nativa.", color=Color(0xFFFFC857), fontSize=10.sp, modifier=Modifier.padding(top=6.dp))
+                                } }
+                            }
+                        }
+                        if (roomError.isNotBlank()) Text(roomError, color=Color(0xFFF87171), fontSize=11.sp, modifier=Modifier.padding(top=8.dp))
+                    }
+                }
+            }
+        }
+        if (authDialog) NativeAuthDialog(authMode, { authMode=it }, { authDialog=false })
+    }
+
+    @Composable
+    private fun PadButton(label: String, bit: Int, tint: Color = Color.White, onTouch: (Int, Boolean) -> Unit) {
+        Box(contentAlignment = Alignment.Center, modifier = Modifier.size(42.dp).background(Color(0xFF1D2332), CircleShape).pointerInput(bit) {
+            detectTapGestures(onPress = { onTouch(bit,true); tryAwaitRelease(); onTouch(bit,false) })
+        }) { Text(label, color=tint, fontSize=13.sp) }
     }
 
     override fun onGenericMotionEvent(event: MotionEvent): Boolean {
-        if ((event.source and InputDevice.SOURCE_JOYSTICK) == InputDevice.SOURCE_JOYSTICK &&
-            event.action == MotionEvent.ACTION_MOVE
-        ) {
-            val x = event.getAxisValue(MotionEvent.AXIS_X)
-            val y = event.getAxisValue(MotionEvent.AXIS_Y)
-            val hatX = event.getAxisValue(MotionEvent.AXIS_HAT_X)
-            val hatY = event.getAxisValue(MotionEvent.AXIS_HAT_Y)
-            var next = btMask and (0xF0.inv())
-            if (y < -0.4f || hatY < -0.5f) next = next or (1 shl 4)
-            if (y > 0.4f || hatY > 0.5f) next = next or (1 shl 5)
-            if (x < -0.4f || hatX < -0.5f) next = next or (1 shl 6)
-            if (x > 0.4f || hatX > 0.5f) next = next or (1 shl 7)
-            btMask = next
-            surfaceRef?.p1Mask = btMask or touchMask
-            return true
+        if ((event.source and InputDevice.SOURCE_JOYSTICK) == InputDevice.SOURCE_JOYSTICK && event.action == MotionEvent.ACTION_MOVE) {
+            val x=event.getAxisValue(MotionEvent.AXIS_X); val y=event.getAxisValue(MotionEvent.AXIS_Y)
+            val hx=event.getAxisValue(MotionEvent.AXIS_HAT_X); val hy=event.getAxisValue(MotionEvent.AXIS_HAT_Y)
+            var next=btMask and 0xF0.inv()
+            if(y < -0.4f || hy < -0.5f) next=next or (1 shl 4); if(y > 0.4f || hy > 0.5f) next=next or (1 shl 5)
+            if(x < -0.4f || hx < -0.5f) next=next or (1 shl 6); if(x > 0.4f || hx > 0.5f) next=next or (1 shl 7)
+            btMask=next; surfaceRef?.p1Mask=btMask or touchMask; return true
         }
         return super.onGenericMotionEvent(event)
     }
-
     override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
-        refreshBluetoothPads()
-        val bit = mapKeyBit(keyCode)
-        if (bit >= 0) {
-            btMask = btMask or (1 shl bit)
-            surfaceRef?.p1Mask = btMask or touchMask
-            return true
-        }
-        return super.onKeyDown(keyCode, event)
+        refreshBluetoothPads(); val bit=mapKeyBit(keyCode)
+        if(bit>=0){btMask=btMask or (1 shl bit);surfaceRef?.p1Mask=btMask or touchMask;return true}
+        return super.onKeyDown(keyCode,event)
     }
-
     override fun onKeyUp(keyCode: Int, event: KeyEvent?): Boolean {
-        val bit = mapKeyBit(keyCode)
-        if (bit >= 0) {
-            btMask = btMask and (1 shl bit).inv()
-            surfaceRef?.p1Mask = btMask or touchMask
-            return true
-        }
-        return super.onKeyUp(keyCode, event)
+        val bit=mapKeyBit(keyCode)
+        if(bit>=0){btMask=btMask and (1 shl bit).inv();surfaceRef?.p1Mask=btMask or touchMask;return true}
+        return super.onKeyUp(keyCode,event)
     }
+    private fun mapKeyBit(keyCode:Int):Int=when(keyCode){
+        KeyEvent.KEYCODE_BUTTON_B,KeyEvent.KEYCODE_X->0; KeyEvent.KEYCODE_BUTTON_A,KeyEvent.KEYCODE_Z->1
+        KeyEvent.KEYCODE_BUTTON_SELECT,KeyEvent.KEYCODE_SHIFT_LEFT->2; KeyEvent.KEYCODE_BUTTON_START,KeyEvent.KEYCODE_ENTER->3
+        KeyEvent.KEYCODE_DPAD_UP,KeyEvent.KEYCODE_W->4; KeyEvent.KEYCODE_DPAD_DOWN,KeyEvent.KEYCODE_S->5
+        KeyEvent.KEYCODE_DPAD_LEFT,KeyEvent.KEYCODE_A->6; KeyEvent.KEYCODE_DPAD_RIGHT,KeyEvent.KEYCODE_D->7
+        KeyEvent.KEYCODE_BUTTON_Y->8; KeyEvent.KEYCODE_BUTTON_X->9; KeyEvent.KEYCODE_BUTTON_L1->10; KeyEvent.KEYCODE_BUTTON_R1->11
+        KeyEvent.KEYCODE_BUTTON_L2->12; KeyEvent.KEYCODE_BUTTON_R2->13; else->-1
+    }
+}
 
-    private fun mapKeyBit(keyCode: Int): Int = when (keyCode) {
-        KeyEvent.KEYCODE_BUTTON_B, KeyEvent.KEYCODE_X -> 0   // ○ / A
-        KeyEvent.KEYCODE_BUTTON_A, KeyEvent.KEYCODE_Z -> 1   // ✕ / B
-        KeyEvent.KEYCODE_BUTTON_SELECT, KeyEvent.KEYCODE_SHIFT_LEFT -> 2
-        KeyEvent.KEYCODE_BUTTON_START, KeyEvent.KEYCODE_ENTER -> 3
-        KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_W -> 4
-        KeyEvent.KEYCODE_DPAD_DOWN, KeyEvent.KEYCODE_S -> 5
-        KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_A -> 6
-        KeyEvent.KEYCODE_DPAD_RIGHT, KeyEvent.KEYCODE_D -> 7
-        KeyEvent.KEYCODE_BUTTON_Y -> 8                       // △ / X
-        KeyEvent.KEYCODE_BUTTON_X -> 9                       // □ / Y
-        KeyEvent.KEYCODE_BUTTON_L1 -> 10
-        KeyEvent.KEYCODE_BUTTON_R1 -> 11
-        KeyEvent.KEYCODE_BUTTON_L2 -> 12
-        KeyEvent.KEYCODE_BUTTON_R2 -> 13
-        else -> -1
+@Composable
+private fun NativeAuthDialog(modeInit: String, onMode: (String)->Unit, onClose: ()->Unit) {
+    val auth= remember { FirebaseAuth.getInstance() }
+    var mode by remember { mutableStateOf(modeInit) }
+    var email by remember { mutableStateOf("") }; var password by remember { mutableStateOf("") }; var confirm by remember { mutableStateOf("") }
+    var error by remember { mutableStateOf("") }; var notice by remember { mutableStateOf("") }; var busy by remember { mutableStateOf(false) }
+    AlertDialog(onDismissRequest=onClose, title={Text(when(mode){"register"->"Criar conta";"reset"->"Recuperar senha";else->"Entrar com e-mail"})},
+        text={ Column(verticalArrangement=Arrangement.spacedBy(8.dp)) {
+            OutlinedTextField(email,{email=it},label={Text("E-mail")},singleLine=true,keyboardOptions=KeyboardOptions(keyboardType=KeyboardType.Email),modifier=Modifier.fillMaxWidth())
+            if(mode!="reset") OutlinedTextField(password,{password=it},label={Text("Senha · mínimo 6 caracteres")},singleLine=true,visualTransformation=PasswordVisualTransformation(),modifier=Modifier.fillMaxWidth())
+            if(mode=="register") OutlinedTextField(confirm,{confirm=it},label={Text("Confirmar senha")},singleLine=true,visualTransformation=PasswordVisualTransformation(),modifier=Modifier.fillMaxWidth())
+            if(error.isNotBlank()) Text(error,color=Color(0xFFF87171),fontSize=11.sp)
+            if(notice.isNotBlank()) Text(notice,color=Color(0xFF34D399),fontSize=11.sp)
+            Row(horizontalArrangement=Arrangement.spacedBy(4.dp)) {
+                if(mode!="login") TextButton(onClick={mode="login";onMode(mode);error="";notice=""}) { Text("Entrar") }
+                if(mode!="register") TextButton(onClick={mode="register";onMode(mode);error="";notice=""}) { Text("Criar conta") }
+                if(mode!="reset") TextButton(onClick={mode="reset";onMode(mode);error="";notice=""}) { Text("Esqueci a senha") }
+            }
+        } },
+        confirmButton={ Button(enabled=!busy,onClick={
+            error="";notice="";val clean=email.trim()
+            if(!clean.contains("@")){error="Digite um e-mail válido.";return@Button}
+            if(mode!="reset" && password.length<6){error="A senha precisa ter pelo menos 6 caracteres.";return@Button}
+            if(mode=="register" && password!=confirm){error="As senhas não coincidem.";return@Button}
+            busy=true
+            when(mode){
+                "register"->auth.createUserWithEmailAndPassword(clean,password).addOnSuccessListener{busy=false;onClose()}.addOnFailureListener{e->busy=false;error=authError(e)}
+                "reset"->auth.sendPasswordResetEmail(clean).addOnSuccessListener{busy=false;notice="Se a conta existir, o link de redefinição foi enviado. Confira o spam."}.addOnFailureListener{e->busy=false;error=authError(e)}
+                else->auth.signInWithEmailAndPassword(clean,password).addOnSuccessListener{busy=false;onClose()}.addOnFailureListener{e->busy=false;error=authError(e)}
+            }
+        }) { Text(if(busy) "Aguarde…" else when(mode){"register"->"Criar conta";"reset"->"Enviar link";else->"Entrar"}) } }, dismissButton={TextButton(onClick=onClose){Text("Fechar")}})
+}
+
+private fun authError(e: Exception): String {
+    val m=e.message?.lowercase() ?: ""
+    return when {
+        "email" in m && "already" in m -> "Esse e-mail já tem conta. Entre ou recupere a senha."
+        "password" in m && ("weak" in m || "6 characters" in m) -> "A senha precisa ter pelo menos 6 caracteres."
+        "credential" in m || "password" in m || "user" in m -> "E-mail ou senha incorretos. Confira ou recupere a senha."
+        "network" in m -> "Sem conexão. Confira a internet e tente de novo."
+        "operation" in m && "allowed" in m -> "Cadastro por e-mail ainda não está habilitado no Firebase."
+        else -> e.localizedMessage ?: "Não foi possível concluir."
     }
 }

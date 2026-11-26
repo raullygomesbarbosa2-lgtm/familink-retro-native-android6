@@ -33,13 +33,13 @@ static uint32_t g_p1_mask = 0;
 static uint32_t g_p2_mask = 0;
 static unsigned g_width = 256;
 static unsigned g_height = 240;
-static unsigned g_pixel_format = 2;
+static unsigned g_pixel_format = 2; // Libretro: 0=0RGB1555, 1=XRGB8888, 2=RGB565
 static std::vector<uint8_t> g_rom_bytes;
 
 static bool env_cb(unsigned cmd, void* data) {
     if (cmd == 10 && data) {
         const unsigned requested = *static_cast<const unsigned*>(data);
-        if (requested < 1 || requested > 3) return false;
+        if (requested > 2) return false;
         g_pixel_format = requested;
         return true;
     }
@@ -48,14 +48,13 @@ static bool env_cb(unsigned cmd, void* data) {
 
 static void video_cb(const void* data, unsigned width, unsigned height, size_t pitch) {
     if (!data) return;
+    if (width == 0 || height == 0 || width > 640 || height > 480) return;
     g_width = width;
     g_height = height;
     g_pixels.resize(width * height);
-    if (width == 0 || height == 0 || width > 640 || height > 480) return;
     const uint8_t* src = static_cast<const uint8_t*>(data);
-    g_pixels.resize(width * height);
     for (unsigned y = 0; y < height; y++) {
-        if (g_pixel_format == 3) {
+        if (g_pixel_format == 1) { // XRGB8888 uses 4 bytes per pixel.
             const uint32_t* row = reinterpret_cast<const uint32_t*>(src + y * pitch);
             for (unsigned x = 0; x < width; x++) g_pixels[y * width + x] = 0xFF000000 | (row[x] & 0x00FFFFFF);
         } else {
@@ -63,11 +62,11 @@ static void video_cb(const void* data, unsigned width, unsigned height, size_t p
             for (unsigned x = 0; x < width; x++) {
                 const uint16_t c = row[x];
                 uint32_t r, g, b;
-                if (g_pixel_format == 1) {
+                if (g_pixel_format == 0) { // 0RGB1555
                     r = ((c >> 10) & 0x1F) * 255 / 31;
                     g = ((c >> 5) & 0x1F) * 255 / 31;
                     b = (c & 0x1F) * 255 / 31;
-                } else {
+                } else { // RGB565
                     r = ((c >> 11) & 0x1F) * 255 / 31;
                     g = ((c >> 5) & 0x3F) * 255 / 63;
                     b = (c & 0x1F) * 255 / 31;
