@@ -62,7 +62,7 @@ static bool env_cb(unsigned cmd, void* data) {
 
 static void video_cb(const void* data, unsigned width, unsigned height, size_t pitch) {
     if (!data) return;
-    if (width == 0 || height == 0 || width > 640 || height > 480) return;
+    if (width == 0 || height == 0 || width > 1024 || height > 768) return;
     g_width = width;
     g_height = height;
     g_pixels.resize(width * height);

@@ -123,6 +123,48 @@ class MainActivity : ComponentActivity() {
         setContent { FamiLinkApp() }
     }
 
+    private fun obtainCoreFile(context: Context, spec: AndroidCoreSpec): File {
+        val coreFile = File(context.filesDir, "cores/${spec.nativeSoName}")
+        fun isElf(file: File): Boolean = file.isFile && file.length() > 1024 && runCatching {
+            file.inputStream().use { input ->
+                val magic = ByteArray(4)
+                input.read(magic) == 4 && magic.contentEquals(byteArrayOf(0x7f, 0x45, 0x4c, 0x46))
+            }
+        }.getOrDefault(false)
+        if (isElf(coreFile)) return coreFile
+        coreFile.parentFile?.mkdirs()
+        val abi = Build.SUPPORTED_ABIS.firstOrNull { it == "arm64-v8a" || it == "armeabi-v7a" || it == "x86_64" }
+            ?: throw IllegalStateException("Este aparelho não tem uma arquitetura Android compatível.")
+        val url = spec.buildbotZipUrl.replace("/arm64-v8a/", "/$abi/")
+        val temp = File(coreFile.parentFile, "${spec.nativeSoName}.download")
+        val connection = (URL(url).openConnection() as HttpURLConnection).apply {
+            connectTimeout = 20000; readTimeout = 60000; instanceFollowRedirects = true
+        }
+        try {
+            val response = connection.responseCode
+            check(response in 200..299) { "Download do núcleo ${spec.consoleName} falhou (HTTP $response)." }
+            var found = false
+            connection.inputStream.use { input -> ZipInputStream(input).use { zip ->
+                var entry = zip.nextEntry
+                while (entry != null) {
+                    if (!entry.isDirectory && entry.name.substringAfterLast('/') == spec.nativeSoName) {
+                        temp.outputStream().use { output -> zip.copyTo(output) }
+                        found = true
+                        break
+                    }
+                    entry = zip.nextEntry
+                }
+            } }
+            check(found && isElf(temp)) { "O pacote baixado do núcleo ${spec.consoleName} está incompleto ou não é compatível com $abi." }
+            if (coreFile.exists()) coreFile.delete()
+            check(temp.renameTo(coreFile)) { "Não consegui instalar o núcleo ${spec.consoleName}." }
+            return coreFile
+        } finally {
+            connection.disconnect()
+            if (temp.exists()) temp.delete()
+        }
+    }
+
     @Composable
     private fun FamiLinkApp() {
         val ctx = LocalContext.current
@@ -181,31 +223,32 @@ class MainActivity : ComponentActivity() {
                 Thread {
                     try {
                         val loaded = RomVerifier.loadFromUri(ctx, uri, selectedCoreId)
-                        val coreFile = File(ctx.filesDir, "cores/${loaded.coreSpec.nativeSoName}")
-                        if (!coreFile.exists()) {
-                            coreFile.parentFile?.mkdirs()
-                            val abi = Build.SUPPORTED_ABIS.firstOrNull { it == "arm64-v8a" || it == "armeabi-v7a" || it == "x86_64" } ?: "arm64-v8a"
-                            val url = loaded.coreSpec.buildbotZipUrl.replace("/arm64-v8a/", "/$abi/")
-                            val connection = URL(url).openConnection() as HttpURLConnection
-                            connection.connectTimeout = 20000; connection.readTimeout = 60000
-                            connection.inputStream.use { input -> ZipInputStream(input).use { zip ->
-                                var entry = zip.nextEntry; var found = false
-                                while (entry != null) {
-                                    if (!entry.isDirectory && entry.name.endsWith(".so")) {
-                                        coreFile.outputStream().use { output -> zip.copyTo(output) }; found = true; break
-                                    }
-                                    entry = zip.nextEntry
-                                }
-                                if (!found) error("Pacote do núcleo não contém uma biblioteca .so")
-                            } }
-                            connection.disconnect()
-                        }
+                        var activeCoreSpec = loaded.coreSpec
+                        var gameAccepted = false
+                        var primaryCoreError = ""
                         NativeCoreBridge.nativeUnload()
-                        check(NativeCoreBridge.nativeLoadCore(coreFile.absolutePath)) { "Não consegui abrir o núcleo ${loaded.coreSpec.nativeSoName}" }
-                        check(NativeCoreBridge.nativeLoadRomBytes(loaded.fileName, loaded.bytes)) { "O núcleo não aceitou essa ROM" }
+                        try {
+                            val primaryFile = obtainCoreFile(ctx, activeCoreSpec)
+                            gameAccepted = NativeCoreBridge.nativeLoadCore(primaryFile.absolutePath) &&
+                                NativeCoreBridge.nativeLoadRomBytes(loaded.fileName, loaded.bytes)
+                        } catch (e: Exception) {
+                            primaryCoreError = e.message ?: "falha no Genesis Plus GX"
+                        }
+                        if (!gameAccepted && loaded.coreSpec.id == "megadrive") {
+                            NativeCoreBridge.nativeUnload()
+                            activeCoreSpec = CoreRegistry.cores.first { it.id == "sega32x" }
+                            val fallbackFile = obtainCoreFile(ctx, activeCoreSpec)
+                            gameAccepted = NativeCoreBridge.nativeLoadCore(fallbackFile.absolutePath) &&
+                                NativeCoreBridge.nativeLoadRomBytes(loaded.fileName, loaded.bytes)
+                        }
+                        check(gameAccepted) {
+                            if (loaded.coreSpec.id == "megadrive") "Genesis Plus GX falhou${if (primaryCoreError.isNotBlank()) ": $primaryCoreError" else ""}; PicoDrive também não abriu a ROM. Confira se é uma ROM Mega Drive válida (.bin, .md, .gen ou .smd)."
+                            else "O núcleo ${loaded.coreSpec.consoleName} não aceitou essa ROM. Confira o formato do arquivo."
+                        }
+                        val usedFallback = activeCoreSpec.id == "sega32x"
                         runOnUiThread {
                             rom = loaded
-                            status = "${loaded.coreSpec.consoleName} · ${loaded.region} · ${loaded.fileName}"
+                            status = "${loaded.coreSpec.consoleName}${if (usedFallback) " (PicoDrive)" else ""} · ${loaded.region} · ${loaded.fileName}"
                             if (pickerOrigin == "Jogar") requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
                             else requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
                             busy = false

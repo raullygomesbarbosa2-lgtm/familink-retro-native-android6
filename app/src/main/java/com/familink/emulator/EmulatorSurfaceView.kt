@@ -18,7 +18,8 @@ class EmulatorSurfaceView(context: Context) : View(context) {
     private var frameBitmap: Bitmap? = null
     @Volatile private var running = false
     private var renderThread: Thread? = null
-    private val pixels = IntArray(640 * 480)
+    // Several cores (especially interlaced Mega Drive modes) can emit frames larger than 640x480.
+    private val pixels = IntArray(1024 * 768)
     private val audio = ShortArray(4096)
     private val pendingAudio = ShortArray(16384)
     private var pendingHead = 0
@@ -64,8 +65,8 @@ class EmulatorSurfaceView(context: Context) : View(context) {
                     p1AnalogX, p1AnalogY, p2AnalogX, p2AnalogY,
                     pixels
                 )
-                val width = (packed ushr 16).coerceIn(0, 640)
-                val height = (packed and 0xFFFF).coerceIn(0, 480)
+                val width = (packed ushr 16).coerceIn(0, 1024)
+                val height = (packed and 0xFFFF).coerceIn(0, 768)
                 if (width > 0 && height > 0) {
                     synchronized(frameLock) {
                         var bitmap = frameBitmap

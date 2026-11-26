@@ -31,6 +31,8 @@ object RomVerifier {
         }
         val bytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
             ?: throw IllegalStateException("Falha ao abrir arquivo ROM.")
+        if (bytes.isEmpty()) throw IllegalArgumentException("O arquivo selecionado está vazio.")
+        if (fileName.substringAfterLast('.', "").isBlank()) throw IllegalArgumentException("O Android não informou a extensão do arquivo. Escolha a ROM pelo seletor de Arquivos, sem renomear.")
 
         val digest = MessageDigest.getInstance("SHA-256").digest(bytes)
         val sha256 = digest.joinToString("") { "%02x".format(it) }

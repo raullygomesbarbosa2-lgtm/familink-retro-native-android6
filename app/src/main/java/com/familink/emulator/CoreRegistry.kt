@@ -20,7 +20,7 @@ object CoreRegistry {
         AndroidCoreSpec("gba", "Game Boy Advance", listOf(".gba"), "mgba_libretro_android.so", "https://buildbot.libretro.com/nightly/android/latest/arm64-v8a/mgba_libretro_android.so.zip"),
         AndroidCoreSpec("vb", "Virtual Boy", listOf(".vb", ".vboy"), "mednafen_vb_libretro_android.so", "https://buildbot.libretro.com/nightly/android/latest/arm64-v8a/mednafen_vb_libretro_android.so.zip"),
         AndroidCoreSpec("gw", "Game & Watch", listOf(".mgw"), "gw_libretro_android.so", "https://buildbot.libretro.com/nightly/android/latest/arm64-v8a/gw_libretro_android.so.zip"),
-        AndroidCoreSpec("megadrive", "Mega Drive / Genesis", listOf(".md", ".gen", ".smd", ".bin"), "genesis_plus_gx_libretro_android.so", "https://buildbot.libretro.com/nightly/android/latest/arm64-v8a/genesis_plus_gx_libretro_android.so.zip"),
+        AndroidCoreSpec("megadrive", "Mega Drive / Genesis", listOf(".md", ".gen", ".smd", ".bin", ".mdx", ".68k", ".zip"), "genesis_plus_gx_libretro_android.so", "https://buildbot.libretro.com/nightly/android/latest/arm64-v8a/genesis_plus_gx_libretro_android.so.zip"),
         AndroidCoreSpec("sega32x", "Sega 32X", listOf(".32x"), "picodrive_libretro_android.so", "https://buildbot.libretro.com/nightly/android/latest/arm64-v8a/picodrive_libretro_android.so.zip"),
         AndroidCoreSpec("segacd", "Sega CD / Mega-CD", listOf(".chd", ".cue"), "genesis_plus_gx_libretro_android.so", "https://buildbot.libretro.com/nightly/android/latest/arm64-v8a/genesis_plus_gx_libretro_android.so.zip"),
         AndroidCoreSpec("mastersystem", "Master System", listOf(".sms"), "genesis_plus_gx_libretro_android.so", "https://buildbot.libretro.com/nightly/android/latest/arm64-v8a/genesis_plus_gx_libretro_android.so.zip"),
