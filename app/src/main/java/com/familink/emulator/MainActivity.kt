@@ -1,6 +1,8 @@
 package com.familink.emulator
 
 import android.content.Context
+import android.content.pm.ActivityInfo
+import android.content.res.Configuration
 import android.hardware.input.InputManager
 import android.os.Build
 import android.os.Bundle
@@ -14,6 +16,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -119,6 +122,8 @@ class MainActivity : ComponentActivity() {
     @Composable
     private fun FamiLinkApp() {
         val ctx = LocalContext.current
+        val orientation = androidx.compose.ui.platform.LocalConfiguration.current.orientation
+        val isLandscape = orientation == Configuration.ORIENTATION_LANDSCAPE
         val auth = remember { FirebaseAuth.getInstance() }
         val db = remember { FirebaseFirestore.getInstance(NativeFirebase.initialize(ctx), NativeFirebase.databaseId()) }
         var user by remember { mutableStateOf(auth.currentUser) }
@@ -182,7 +187,7 @@ class MainActivity : ComponentActivity() {
                         NativeCoreBridge.nativeUnload()
                         check(NativeCoreBridge.nativeLoadCore(coreFile.absolutePath)) { "Não consegui abrir o núcleo ${loaded.coreSpec.nativeSoName}" }
                         check(NativeCoreBridge.nativeLoadRomBytes(loaded.fileName, loaded.bytes)) { "O núcleo não aceitou essa ROM" }
-                        runOnUiThread { rom = loaded; status = "${loaded.coreSpec.consoleName} · ${loaded.region} · ${loaded.fileName}"; busy = false }
+                        runOnUiThread { requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE; rom = loaded; status = "${loaded.coreSpec.consoleName} · ${loaded.region} · ${loaded.fileName}"; busy = false }
                     } catch (e: Exception) {
                         runOnUiThread { status = e.message ?: "Erro ao carregar ROM"; busy = false }
                     }
@@ -191,7 +196,25 @@ class MainActivity : ComponentActivity() {
         }
 
         MaterialTheme(colorScheme = darkColorScheme(primary = Accent, background = Bg, surface = Panel)) {
-            Column(Modifier.fillMaxSize().background(Bg)) {
+            if (rom != null && isLandscape) {
+                Box(Modifier.fillMaxSize().background(Color.Black)) {
+                    AndroidView(factory = { c -> EmulatorSurfaceView(c).also { it.targetFps = targetFps; surfaceRef = it } }, update = { it.targetFps = targetFps }, modifier = Modifier.fillMaxSize())
+                    Row(Modifier.align(Alignment.TopStart).padding(start=8.dp,top=4.dp), verticalAlignment=Alignment.CenterVertically) {
+                        Text(status, color=Color.White.copy(alpha=0.82f), fontSize=10.sp, modifier=Modifier.background(Color.Black.copy(alpha=0.28f),RoundedCornerShape(6.dp)).padding(horizontal=6.dp,vertical=3.dp), maxLines=1)
+                        TextButton(onClick={ requestedOrientation=ActivityInfo.SCREEN_ORIENTATION_PORTRAIT }, modifier=Modifier.padding(start=4.dp), colors=ButtonDefaults.textButtonColors(containerColor=Color.Black.copy(alpha=0.22f))) { Text("Voltar",color=Color.White,fontSize=10.sp) }
+                    }
+                    Row(Modifier.align(Alignment.BottomCenter).fillMaxWidth().padding(horizontal=14.dp,vertical=8.dp), horizontalArrangement=Arrangement.SpaceBetween, verticalAlignment=Alignment.Bottom) {
+                        AnalogStick(onMove={x,y->updateAnalog(x,y)})
+                        Row(horizontalArrangement=Arrangement.spacedBy(5.dp), verticalAlignment=Alignment.CenterVertically) { PadButton("SEL",2){b,d->updateTouchBit(b,d)}; PadButton("STR",3){b,d->updateTouchBit(b,d)} }
+                        Column(horizontalAlignment=Alignment.CenterHorizontally) {
+                            Row(horizontalArrangement=Arrangement.spacedBy(5.dp)) { PadButton("L1",10){b,d->updateTouchBit(b,d)}; PadButton("R1",11){b,d->updateTouchBit(b,d)} }
+                            PadButton("△",8,Color(0xFF10B981)){b,d->updateTouchBit(b,d)}
+                            Row(horizontalArrangement=Arrangement.spacedBy(7.dp)) { PadButton("□",9,Color(0xFFEC4899)){b,d->updateTouchBit(b,d)}; PadButton("○",0,Color(0xFFEF4444)){b,d->updateTouchBit(b,d)} }
+                            PadButton("✕",1,Color(0xFF3B82F6)){b,d->updateTouchBit(b,d)}
+                        }
+                    }
+                }
+            } else Column(Modifier.fillMaxSize().background(Bg)) {
                 Row(Modifier.fillMaxWidth().background(Panel).padding(horizontal = 16.dp, vertical = 11.dp), verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
                         Text("FamiLink", color = Color.White, fontSize = 21.sp, fontWeight = FontWeight.Bold)
@@ -234,7 +257,7 @@ class MainActivity : ComponentActivity() {
                         Spacer(Modifier.height(9.dp))
                         Text(if (btDevices.isEmpty()) "Controle Bluetooth/USB: aguardando" else "Controle conectado: ${btDevices.joinToString()}", color = if (btDevices.isEmpty()) Muted else Color(0xFF34D399), fontSize = 10.sp)
                         Spacer(Modifier.height(5.dp))
-                        Row(Modifier.fillMaxWidth().background(Panel, RoundedCornerShape(14.dp)).padding(10.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                        Row(Modifier.fillMaxWidth().padding(4.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                             AnalogStick(onMove = { x, y -> updateAnalog(x, y) })
                             Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) { PadButton("SEL",2){b,d->updateTouchBit(b,d)}; PadButton("STR",3){b,d->updateTouchBit(b,d)} }
                             Column(horizontalAlignment = Alignment.CenterHorizontally) {
@@ -333,7 +356,7 @@ class MainActivity : ComponentActivity() {
 
     @Composable
     private fun PadButton(label: String, bit: Int, tint: Color = Color.White, onTouch: (Int, Boolean) -> Unit) {
-        Box(contentAlignment = Alignment.Center, modifier = Modifier.size(42.dp).background(Color(0xFF1D2332), CircleShape).pointerInput(bit) {
+        Box(contentAlignment = Alignment.Center, modifier = Modifier.size(42.dp).background(Color.Transparent, CircleShape).border(1.dp, tint.copy(alpha = 0.48f), CircleShape).pointerInput(bit) {
             detectTapGestures(onPress = { onTouch(bit,true); tryAwaitRelease(); onTouch(bit,false) })
         }) { Text(label, color=tint, fontSize=13.sp) }
     }
@@ -396,8 +419,8 @@ private fun AnalogStick(onMove: (Float, Float) -> Unit) {
     ) {
         val center = Offset(size.width / 2f, size.height / 2f)
         val outer = minOf(size.width, size.height) * 0.45f
-        drawCircle(color = Color(0xFF202838), radius = outer, center = center)
-        drawCircle(color = Color(0xFF64748B), radius = outer, center = center, style = Stroke(width = 2.dp.toPx()))
+        drawCircle(color = Color.Transparent, radius = outer, center = center)
+        drawCircle(color = Color(0xFF64748B).copy(alpha=0.72f), radius = outer, center = center, style = Stroke(width = 2.dp.toPx()))
         drawCircle(color = Color(0xFF39465C), radius = outer * 0.55f, center = center, style = Stroke(width = 1.dp.toPx()))
         drawCircle(color = Color(0xFF0F172A), radius = outer * 0.36f, center = center + knob)
         drawCircle(color = Color(0xFF38BDF8), radius = outer * 0.32f, center = center + knob, style = Stroke(width = 3.dp.toPx()))

@@ -36,13 +36,24 @@ static float g_p2_analog_x = 0.f, g_p2_analog_y = 0.f;
 static unsigned g_width = 256;
 static unsigned g_height = 240;
 static unsigned g_pixel_format = 2; // Libretro: 0=0RGB1555, 1=XRGB8888, 2=RGB565
+static double g_audio_sample_rate = 48000.0;
 static std::vector<uint8_t> g_rom_bytes;
+
+struct retro_game_geometry { unsigned base_width, base_height, max_width, max_height; float aspect_ratio; };
+struct retro_system_timing { double fps, sample_rate; };
+struct retro_system_av_info { retro_game_geometry geometry; retro_system_timing timing; };
 
 static bool env_cb(unsigned cmd, void* data) {
     if (cmd == 10 && data) {
         const unsigned requested = *static_cast<const unsigned*>(data);
         if (requested > 2) return false;
         g_pixel_format = requested;
+        return true;
+    }
+    if (cmd == 32 && data) { // RETRO_ENVIRONMENT_SET_SYSTEM_AV_INFO
+        const auto* info = static_cast<const retro_system_av_info*>(data);
+        if (info->timing.sample_rate >= 8000.0 && info->timing.sample_rate <= 192000.0)
+            g_audio_sample_rate = info->timing.sample_rate;
         return true;
     }
     return false;
@@ -182,6 +193,11 @@ Java_com_familink_emulator_NativeCoreBridge_nativeRunFrame(JNIEnv* env, jobject,
         env->SetIntArrayRegion(outPixels, 0, copyCount, reinterpret_cast<const jint*>(g_pixels.data()));
     }
     return static_cast<jint>((g_width << 16) | (g_height & 0xFFFF));
+}
+
+extern "C" JNIEXPORT jint JNICALL
+Java_com_familink_emulator_NativeCoreBridge_nativeGetAudioSampleRate(JNIEnv*, jobject) {
+    return static_cast<jint>(g_audio_sample_rate + 0.5);
 }
 
 extern "C" JNIEXPORT jint JNICALL

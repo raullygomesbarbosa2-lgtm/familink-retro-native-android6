@@ -7,6 +7,7 @@ object NativeCoreBridge {
 
     external fun nativeLoadCore(soPath: String): Boolean
     external fun nativeLoadRomBytes(romPath: String, bytes: ByteArray): Boolean
+    external fun nativeGetAudioSampleRate(): Int
     external fun nativeRunFrame(p1Mask: Int, p2Mask: Int, p1AnalogX: Float, p1AnalogY: Float, p2AnalogX: Float, p2AnalogY: Float, outArgbPixels: IntArray): Int
     external fun nativeReadAudio(outPcm16: ShortArray): Int
     external fun nativeSaveState(): ByteArray?

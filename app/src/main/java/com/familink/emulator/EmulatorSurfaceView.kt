@@ -48,10 +48,12 @@ class EmulatorSurfaceView(context: Context) : View(context) {
         var track: AudioTrack? = null
         try {
             Process.setThreadPriority(Process.THREAD_PRIORITY_DISPLAY)
+            val sampleRate = NativeCoreBridge.nativeGetAudioSampleRate().coerceIn(8000, 192000)
+            val minimumBuffer = AudioTrack.getMinBufferSize(sampleRate, AudioFormat.CHANNEL_OUT_STEREO, AudioFormat.ENCODING_PCM_16BIT).coerceAtLeast(8192)
             track = AudioTrack.Builder()
                 .setAudioAttributes(AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_GAME).build())
-                .setAudioFormat(AudioFormat.Builder().setEncoding(AudioFormat.ENCODING_PCM_16BIT).setSampleRate(44100).setChannelMask(AudioFormat.CHANNEL_OUT_STEREO).build())
-                .setBufferSizeInBytes(16384).build()
+                .setAudioFormat(AudioFormat.Builder().setEncoding(AudioFormat.ENCODING_PCM_16BIT).setSampleRate(sampleRate).setChannelMask(AudioFormat.CHANNEL_OUT_STEREO).build())
+                .setBufferSizeInBytes(minimumBuffer).build()
             track.play()
             while (running) {
                 val frameStart = System.nanoTime()
