@@ -50,5 +50,5 @@ dependencies {
     implementation("com.google.firebase:firebase-auth")
     implementation("com.google.firebase:firebase-firestore")
     // Android WebRTC data-channel transport; Android 6+ compatible.
-    implementation("com.infobip:google-webrtc:1.0.48246t")
+    implementation("com.infobip:google-webrtc:1.0.45036")
 }
