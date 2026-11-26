@@ -11,7 +11,7 @@ object NativeFirebase {
     private const val DATABASE_ID = "ai-studio-9b47464d-83f5-4195-ab77-803c3474f722"
     fun initialize(context: Context): FirebaseApp {
         FirebaseApp.getApps(context).firstOrNull { it.name == "[DEFAULT]" }?.let { return it }
-        val options = FirebaseOptions.Builder().setApiKey(API_KEY).setApplicationId(APP_ID).setProjectId(PROJECT_ID).build()
+        val options = FirebaseOptions.Builder().setApiKey(API_KEY).setApplicationId(APP_ID).setProjectId(PROJECT_ID).setStorageBucket("loyal-jigsaw-5dtd0.firebasestorage.app").build()
         return FirebaseApp.initializeApp(context, options)!!
     }
     fun databaseId() = DATABASE_ID

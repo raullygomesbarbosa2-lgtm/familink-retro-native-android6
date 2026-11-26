@@ -12,33 +12,50 @@ data class VerifiedRom(
     val coreSpec: AndroidCoreSpec,
     val region: RomRegion,
     val sha256: String,
-    val bytes: ByteArray
+    val bytes: ByteArray,
+    val archiveName: String = fileName,
+    val archiveBytes: ByteArray = bytes
 )
 
 object RomVerifier {
-    fun loadFromUri(context: Context, uri: Uri, selectedCoreId: String? = null): VerifiedRom {
-        val fileName = resolveName(context, uri)
-        val coreSpec = if (selectedCoreId.isNullOrBlank()) {
-            CoreRegistry.detectForFilename(fileName)
-        } else {
-            val selected = CoreRegistry.cores.firstOrNull { it.id == selectedCoreId }
-                ?: throw IllegalArgumentException("O núcleo escolhido não está disponível.")
-            val lowerName = fileName.lowercase()
-            if (selected.extensions.none { lowerName.endsWith(it) }) {
-                throw IllegalArgumentException("$fileName não é compatível com ${selected.consoleName}. Formatos aceitos: ${selected.extensions.joinToString()}.")
+    fun loadZipFromUri(context: Context, uri: Uri, selectedCoreId: String?): VerifiedRom {
+        val archiveName = resolveName(context, uri)
+        val archiveBytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+            ?: throw IllegalStateException("Falha ao abrir arquivo ZIP.")
+        return loadZipBytes(archiveName, archiveBytes, selectedCoreId)
+    }
+
+    fun loadZipBytes(archiveName: String, archiveBytes: ByteArray, selectedCoreId: String?): VerifiedRom {
+        require(archiveName.substringAfterLast('.', "").equals("zip", true)) { "Use somente arquivo .zip na biblioteca." }
+        if (archiveBytes.isEmpty()) throw IllegalArgumentException("O arquivo ZIP está vazio.")
+        val core = CoreRegistry.cores.firstOrNull { it.id == selectedCoreId }
+            ?: throw IllegalArgumentException("Escolha primeiro o sistema/núcleo na aba Núcleos.")
+        val entries = mutableListOf<Pair<String, ByteArray>>()
+        java.util.zip.ZipInputStream(archiveBytes.inputStream()).use { zip ->
+            var entry = zip.nextEntry
+            while (entry != null) {
+                if (!entry.isDirectory && entry.size != 0L) {
+                    val name = entry.name.substringAfterLast('/')
+                    val ext = "." + name.substringAfterLast('.', "").lowercase()
+                    if (core.id.startsWith("arcade") || core.id == "arcade" || core.id == "neogeo") {
+                        // Arcade cores consume the intact ZIP set as one libretro game.
+                        break
+                    }
+                    if (core.extensions.any { it.equals(ext, true) }) entries += name to zip.readBytes()
+                }
+                zip.closeEntry()
+                entry = zip.nextEntry
             }
-            selected
         }
-        val bytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
-            ?: throw IllegalStateException("Falha ao abrir arquivo ROM.")
-        if (bytes.isEmpty()) throw IllegalArgumentException("O arquivo selecionado está vazio.")
-        if (fileName.substringAfterLast('.', "").isBlank()) throw IllegalArgumentException("O Android não informou a extensão do arquivo. Escolha a ROM pelo seletor de Arquivos, sem renomear.")
-
-        val digest = MessageDigest.getInstance("SHA-256").digest(bytes)
-        val sha256 = digest.joinToString("") { "%02x".format(it) }
-        val region = detectRegion(fileName, bytes, coreSpec.id)
-
-        return VerifiedRom(fileName, coreSpec, region, sha256, bytes)
+        val (gameName, gameBytes) = if (core.id.startsWith("arcade") || core.id == "arcade" || core.id == "neogeo") {
+            archiveName to archiveBytes
+        } else {
+            entries.maxByOrNull { it.second.size } ?: throw IllegalArgumentException("Não achei dentro do ZIP um arquivo compatível com ${core.consoleName}. Formatos esperados: ${core.extensions.joinToString()}.")
+        }
+        if (gameBytes.isEmpty()) throw IllegalArgumentException("A ROM dentro do ZIP está vazia.")
+        val sha256 = MessageDigest.getInstance("SHA-256").digest(gameBytes).joinToString("") { "%02x".format(it) }
+        val region = detectRegion("$archiveName $gameName", gameBytes, core.id)
+        return VerifiedRom(gameName, core, region, sha256, gameBytes, archiveName, archiveBytes)
     }
 
     fun validateMatch(hostHash: String, hostRegion: RomRegion, guest: VerifiedRom): Pair<Boolean, String> {

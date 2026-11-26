@@ -48,7 +48,6 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.auth.FirebaseUser
-import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
 import java.io.File
 import java.net.HttpURLConnection
@@ -65,7 +64,6 @@ class MainActivity : ComponentActivity() {
     private var btMask = 0
     private var touchMask = 0
     private var analogMask = 0
-    private var localP2 = false
     private val btNamesState = mutableStateOf<List<String>>(emptyList())
 
     private fun refreshBluetoothPads() {
@@ -80,7 +78,7 @@ class MainActivity : ComponentActivity() {
 
     private fun updateTouchBit(bit: Int, down: Boolean) {
         touchMask = if (down) (touchMask or (1 shl bit)) else (touchMask and (1 shl bit).inv())
-        if (localP2) surfaceRef?.p2Mask = touchMask or analogMask else surfaceRef?.p1Mask = btMask or touchMask or analogMask
+        surfaceRef?.p1Mask = btMask or touchMask or analogMask
     }
 
     private fun updateAnalog(x: Float, y: Float) {
@@ -93,13 +91,8 @@ class MainActivity : ComponentActivity() {
             if (x > 0.45f) mask = mask or (1 shl 7)
             mask
         }
-        if (localP2) {
-            surfaceRef?.p2AnalogX = x; surfaceRef?.p2AnalogY = y
-            surfaceRef?.p2Mask = touchMask or analogMask
-        } else {
-            surfaceRef?.p1AnalogX = x; surfaceRef?.p1AnalogY = y
-            surfaceRef?.p1Mask = btMask or touchMask or analogMask
-        }
+        surfaceRef?.p1AnalogX = x; surfaceRef?.p1AnalogY = y
+        surfaceRef?.p1Mask = btMask or touchMask or analogMask
     }
 
     @Suppress("DEPRECATION")
@@ -175,58 +168,20 @@ class MainActivity : ComponentActivity() {
         var user by remember { mutableStateOf(auth.currentUser) }
         var authDialog by remember { mutableStateOf(false) }
         var authMode by remember { mutableStateOf("login") }
-        var tab by remember { mutableStateOf("Jogar") }
+        var tab by remember { mutableStateOf("Biblioteca") }
         var rom by remember { mutableStateOf<VerifiedRom?>(null) }
         var status by remember { mutableStateOf("Carregue uma ROM sua para jogar") }
         var targetFps by remember { mutableIntStateOf(60) }
-        var localTwoPlayer by remember { mutableStateOf(false) }
         var search by remember { mutableStateOf("") }
+        var library by remember { mutableStateOf(RomLibrary.list(ctx)) }
+        var cloudStatus by remember { mutableStateOf("Biblioteca local neste aparelho") }
         var selectedCoreId by remember { mutableStateOf<String?>(null) }
-        var pickerOrigin by remember { mutableStateOf("Jogar") }
-        var roomCode by remember { mutableStateOf("") }
-        var roomInfo by remember { mutableStateOf<Map<String, Any>?>(null) }
-        var gameStream by remember { mutableStateOf<GameStreamSession?>(null) }
-        var streamViewRef by remember { mutableStateOf<GameStreamView?>(null) }
-        var streamStatus by remember { mutableStateOf("Aguardando conexão P2P") }
-        var remoteGuest by remember { mutableStateOf(false) }
-        var roomError by remember { mutableStateOf("") }
         var busy by remember { mutableStateOf(false) }
         val btDevices by btNamesState
 
-        LaunchedEffect(roomInfo?.get("guestAccessStatus"), roomInfo?.get("guestUid"), roomCode, user?.uid, rom) {
-            val approved = roomInfo?.get("guestAccessStatus") == "approved"
-            val host = roomInfo?.get("hostUid") as? String
-            val guest = roomInfo?.get("guestUid") as? String
-            remoteGuest = approved && guest == user?.uid && host != user?.uid
-            if (approved && roomCode.isNotBlank() && (rom != null || remoteGuest)) {
-                requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
-            } else if (!approved && remoteGuest) {
-                requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
-            }
-        }
-
-        DisposableEffect(roomCode, user?.uid, roomInfo?.get("hostUid"), roomInfo?.get("guestUid"), rom?.fileName) {
-            val currentUser = user?.uid
-            val hostUid = roomInfo?.get("hostUid") as? String
-            val guestUid = roomInfo?.get("guestUid") as? String
-            val shouldHostStream = currentUser != null && currentUser == hostUid && !guestUid.isNullOrBlank() && rom != null
-            val shouldReceive = currentUser != null && currentUser == guestUid && currentUser != hostUid
-            if (roomCode.isNotBlank() && (shouldHostStream || shouldReceive)) {
-                val session = GameStreamSession(ctx, db, roomCode, shouldHostStream,
-                    onPacket = { kind, payload, rate -> runOnUiThread { streamViewRef?.accept(kind, payload, rate) } },
-                    onState = { msg -> runOnUiThread { streamStatus = msg } })
-                gameStream = session
-                if (shouldHostStream) session.startHost()
-                onDispose { session.close(); if (gameStream === session) gameStream = null }
-            } else {
-                gameStream = null
-                onDispose { }
-            }
-        }
-
-        BackHandler(enabled = (rom != null && isLandscape) || tab != "Jogar") {
+        BackHandler(enabled = (rom != null && isLandscape) || tab != "Biblioteca") {
             requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
-            tab = "Jogar"
+            tab = "Biblioteca"
         }
 
         DisposableEffect(auth) {
@@ -234,82 +189,81 @@ class MainActivity : ComponentActivity() {
             auth.addAuthStateListener(listener)
             onDispose { auth.removeAuthStateListener(listener) }
         }
-        DisposableEffect(roomCode, user?.uid) {
-            if (roomCode.isBlank() || user == null) { roomInfo = null; onDispose { } }
-            else {
-                val reg = db.collection("rooms").document(roomCode).addSnapshotListener { snap, err ->
-                    if (err != null) roomError = err.localizedMessage ?: "Falha ao atualizar sala"
-                    else roomInfo = if (snap != null && snap.exists()) snap.data else null
-                }
-                onDispose { reg.remove() }
+        LaunchedEffect(user?.uid) {
+            library = RomLibrary.list(ctx)
+            val uid = user?.uid
+            if (uid != null) {
+                cloudStatus = "Verificando biblioteca vinculada à conta…"
+                CloudRomSync.sync(NativeFirebase.initialize(ctx), ctx, db, uid) { msg -> runOnUiThread { cloudStatus = msg; library = RomLibrary.list(ctx) } }
             }
+        }
+
+
+        fun loadArchive(archiveName: String, archiveBytes: ByteArray, coreId: String?, saveToLibrary: Boolean) {
+            if (!archiveName.endsWith(".zip", true)) { status = "A biblioteca aceita somente arquivos .zip."; return }
+            busy = true
+            status = "Lendo ZIP e preparando o núcleo nativo…"
+            Thread {
+                try {
+                    val loaded = RomVerifier.loadZipBytes(archiveName, archiveBytes, coreId)
+                    if (saveToLibrary) RomLibrary.import(ctx, archiveName, loaded.coreSpec.id, archiveBytes)
+                    var activeCoreSpec = loaded.coreSpec
+                    var gameAccepted = false
+                    var primaryCoreError = ""
+                    NativeCoreBridge.nativeUnload()
+                    try {
+                        val primaryFile = obtainCoreFile(ctx, activeCoreSpec)
+                        gameAccepted = NativeCoreBridge.nativeLoadCore(primaryFile.absolutePath) && NativeCoreBridge.nativeLoadRomBytes(loaded.fileName, loaded.bytes)
+                    } catch (e: Exception) { primaryCoreError = e.message ?: "falha no núcleo" }
+                    if (!gameAccepted && loaded.coreSpec.id == "megadrive") {
+                        NativeCoreBridge.nativeUnload()
+                        activeCoreSpec = CoreRegistry.cores.first { it.id == "sega32x" }
+                        val fallbackFile = obtainCoreFile(ctx, activeCoreSpec)
+                        gameAccepted = NativeCoreBridge.nativeLoadCore(fallbackFile.absolutePath) && NativeCoreBridge.nativeLoadRomBytes(loaded.fileName, loaded.bytes)
+                    }
+                    check(gameAccepted) {
+                        if (loaded.coreSpec.id == "megadrive") "Genesis Plus GX falhou${if (primaryCoreError.isNotBlank()) ": $primaryCoreError" else ""}; PicoDrive também não abriu a ROM do ZIP."
+                        else "O núcleo ${loaded.coreSpec.consoleName} não aceitou a ROM dentro do ZIP."
+                    }
+                    val usedFallback = activeCoreSpec.id == "sega32x"
+                    runOnUiThread {
+                        rom = loaded
+                        status = "${loaded.coreSpec.consoleName}${if (usedFallback) " (PicoDrive)" else ""} · ${loaded.fileName}"
+                        library = RomLibrary.list(ctx)
+                        tab = "Jogar"
+                        requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
+                        busy = false
+                    }
+                } catch (e: Exception) {
+                    runOnUiThread { status = e.message ?: "Erro ao carregar ZIP"; busy = false }
+                }
+            }.start()
         }
 
         val romPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
             if (uri != null) {
-                busy = true
-                status = "Lendo ROM e preparando o núcleo nativo…"
                 Thread {
                     try {
-                        val loaded = RomVerifier.loadFromUri(ctx, uri, selectedCoreId)
-                        var activeCoreSpec = loaded.coreSpec
-                        var gameAccepted = false
-                        var primaryCoreError = ""
-                        NativeCoreBridge.nativeUnload()
-                        try {
-                            val primaryFile = obtainCoreFile(ctx, activeCoreSpec)
-                            gameAccepted = NativeCoreBridge.nativeLoadCore(primaryFile.absolutePath) &&
-                                NativeCoreBridge.nativeLoadRomBytes(loaded.fileName, loaded.bytes)
-                        } catch (e: Exception) {
-                            primaryCoreError = e.message ?: "falha no Genesis Plus GX"
-                        }
-                        if (!gameAccepted && loaded.coreSpec.id == "megadrive") {
-                            NativeCoreBridge.nativeUnload()
-                            activeCoreSpec = CoreRegistry.cores.first { it.id == "sega32x" }
-                            val fallbackFile = obtainCoreFile(ctx, activeCoreSpec)
-                            gameAccepted = NativeCoreBridge.nativeLoadCore(fallbackFile.absolutePath) &&
-                                NativeCoreBridge.nativeLoadRomBytes(loaded.fileName, loaded.bytes)
-                        }
-                        check(gameAccepted) {
-                            if (loaded.coreSpec.id == "megadrive") "Genesis Plus GX falhou${if (primaryCoreError.isNotBlank()) ": $primaryCoreError" else ""}; PicoDrive também não abriu a ROM. Confira se é uma ROM Mega Drive válida (.bin, .md, .gen ou .smd)."
-                            else "O núcleo ${loaded.coreSpec.consoleName} não aceitou essa ROM. Confira o formato do arquivo."
-                        }
-                        val usedFallback = activeCoreSpec.id == "sega32x"
-                        runOnUiThread {
-                            rom = loaded
-                            status = "${loaded.coreSpec.consoleName}${if (usedFallback) " (PicoDrive)" else ""} · ${loaded.region} · ${loaded.fileName}"
-                            if (pickerOrigin == "Jogar") requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
-                            else requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
-                            busy = false
-                        }
-                    } catch (e: Exception) {
-                        runOnUiThread { status = e.message ?: "Erro ao carregar ROM"; busy = false }
-                    }
+                        val name = ctx.contentResolver.query(uri, null, null, null, null)?.use { cursor ->
+                            val idx = cursor.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
+                            if (cursor.moveToFirst() && idx >= 0) cursor.getString(idx) else null
+                        } ?: uri.lastPathSegment ?: "game.zip"
+                        val bytes = ctx.contentResolver.openInputStream(uri)?.use { it.readBytes() } ?: error("Não consegui ler o arquivo selecionado.")
+                        runOnUiThread { loadArchive(name, bytes, selectedCoreId, true) }
+                    } catch (e: Exception) { runOnUiThread { status = e.message ?: "Erro ao ler ZIP" } }
                 }.start()
             }
         }
 
         MaterialTheme(colorScheme = darkColorScheme(primary = Accent, background = Bg, surface = Panel)) {
-            if (((rom != null) || remoteGuest) && isLandscape) {
+            if (rom != null && isLandscape) {
                 Box(Modifier.fillMaxSize().background(Color.Black)) {
-                    if (remoteGuest) {
-                        AndroidView(factory = { c -> GameStreamView(c).also { streamViewRef = it } }, update = { streamViewRef = it; it.statusText = streamStatus }, modifier = Modifier.fillMaxSize())
-                    } else {
-                        AndroidView(factory = { c -> EmulatorSurfaceView(c).also { view ->
-                            view.targetFps = targetFps; surfaceRef = view
-                            view.framePublisher = { bitmap -> if (roomInfo?.get("guestAccessStatus") == "approved") gameStream?.publishFrame(bitmap) }
-                            view.audioPublisher = { pcm, count, rate -> if (roomInfo?.get("guestAccessStatus") == "approved") gameStream?.publishAudio(pcm, count, rate) }
-                        } }, update = { view ->
-                            view.targetFps = targetFps
-                            view.framePublisher = { bitmap -> if (roomInfo?.get("guestAccessStatus") == "approved") gameStream?.publishFrame(bitmap) }
-                            view.audioPublisher = { pcm, count, rate -> if (roomInfo?.get("guestAccessStatus") == "approved") gameStream?.publishAudio(pcm, count, rate) }
-                        }, modifier = Modifier.fillMaxSize())
-                    }
+                    AndroidView(factory = { c -> EmulatorSurfaceView(c).also { it.targetFps = targetFps; surfaceRef = it } }, update = { it.targetFps = targetFps }, modifier = Modifier.fillMaxSize())
                     Row(Modifier.align(Alignment.TopStart).padding(start=8.dp,top=4.dp), verticalAlignment=Alignment.CenterVertically) {
-                        Text(if (remoteGuest) "P2 · $streamStatus" else "$status · $streamStatus", color=Color.White.copy(alpha=0.82f), fontSize=10.sp, modifier=Modifier.background(Color.Black.copy(alpha=0.28f),RoundedCornerShape(6.dp)).padding(horizontal=6.dp,vertical=3.dp), maxLines=1)
+                        Text(status, color=Color.White.copy(alpha=0.82f), fontSize=10.sp, modifier=Modifier.background(Color.Black.copy(alpha=0.28f),RoundedCornerShape(6.dp)).padding(horizontal=6.dp,vertical=3.dp), maxLines=1)
                         TextButton(onClick={ requestedOrientation=ActivityInfo.SCREEN_ORIENTATION_PORTRAIT }, modifier=Modifier.padding(start=4.dp), colors=ButtonDefaults.textButtonColors(containerColor=Color.Black.copy(alpha=0.22f))) { Text("Voltar",color=Color.White,fontSize=10.sp) }
                     }
-                    if (!remoteGuest) Row(Modifier.align(Alignment.BottomCenter).fillMaxWidth().padding(horizontal=14.dp,vertical=8.dp), horizontalArrangement=Arrangement.SpaceBetween, verticalAlignment=Alignment.Bottom) {
+                    Row(Modifier.align(Alignment.BottomCenter).fillMaxWidth().padding(horizontal=14.dp,vertical=8.dp), horizontalArrangement=Arrangement.SpaceBetween, verticalAlignment=Alignment.Bottom) {
                         AnalogStick(onMove={x,y->updateAnalog(x,y)})
                         Row(horizontalArrangement=Arrangement.spacedBy(5.dp), verticalAlignment=Alignment.CenterVertically) { PadButton("SEL",2,buttonSize=54.dp){b,d->updateTouchBit(b,d)}; PadButton("STR",3,buttonSize=54.dp){b,d->updateTouchBit(b,d)} }
                         Column(horizontalAlignment=Alignment.CenterHorizontally) {
@@ -323,20 +277,20 @@ class MainActivity : ComponentActivity() {
             } else Column(Modifier.fillMaxSize().background(Bg)) {
                 Row(Modifier.fillMaxWidth().background(Panel).padding(horizontal = 16.dp, vertical = 11.dp), verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
-                        Text("FamiLink", color = Color.White, fontSize = 21.sp, fontWeight = FontWeight.Bold)
+                        Text("FamiLink Launcher", color = Color.White, fontSize = 21.sp, fontWeight = FontWeight.Bold)
                         Text("Android nativo · SDK", color = Muted, fontSize = 11.sp)
                     }
                     if (user == null) {
                         Button(onClick = { authMode = "login"; authDialog = true }, colors = ButtonDefaults.buttonColors(containerColor = Accent)) { Text("Entrar com e-mail", fontSize = 12.sp) }
                     } else {
-                        Column(horizontalAlignment = Alignment.End, modifier = Modifier.clickable { auth.signOut(); roomCode = "" }) {
+                        Column(horizontalAlignment = Alignment.End, modifier = Modifier.clickable { auth.signOut() }) {
                             Text(user?.email ?: "Conta", color = Color.White, fontSize = 11.sp, maxLines = 1)
                             Text("Toque para sair", color = Muted, fontSize = 9.sp)
                         }
                     }
                 }
                 Row(Modifier.fillMaxWidth().background(Bg).padding(horizontal = 7.dp, vertical = 6.dp), horizontalArrangement = Arrangement.spacedBy(5.dp)) {
-                    listOf("Jogar", "Online", "Local", "Núcleos").forEach { label ->
+                    listOf("Biblioteca", "Jogar", "Núcleos").forEach { label ->
                         TextButton(onClick = { tab = label }, modifier = Modifier.weight(1f), colors = ButtonDefaults.textButtonColors(containerColor = if (tab == label) Accent else Panel)) {
                             Text(label, color = Color.White, fontSize = 11.sp, maxLines = 1)
                         }
@@ -347,16 +301,15 @@ class MainActivity : ComponentActivity() {
                         Text(status, color = Muted, fontSize = 11.sp, maxLines = 2)
                         Spacer(Modifier.height(8.dp))
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                            Button(onClick = { pickerOrigin = "Jogar"; romPicker.launch(arrayOf("*/*")) }, enabled = !busy, colors = ButtonDefaults.buttonColors(containerColor = Accent)) { Text(if (busy) "Carregando…" else "Abrir ROM") }
+                            Button(onClick = { if (selectedCoreId == null) { tab = "Núcleos"; status = "Escolha o sistema antes de abrir um ZIP." } else romPicker.launch(arrayOf("application/zip", "application/x-zip-compressed", "application/octet-stream")) }, enabled = !busy, colors = ButtonDefaults.buttonColors(containerColor = Accent)) { Text(if (busy) "Carregando…" else "Abrir ZIP") }
                             OutlinedButton(onClick = { targetFps = if (targetFps == 30) 60 else 30 }) { Text("$targetFps FPS", color = Color.White) }
-                            TextButton(onClick = { localTwoPlayer = !localTwoPlayer; localP2 = localTwoPlayer; touchMask = 0; analogMask = 0; surfaceRef?.p1AnalogX = 0f; surfaceRef?.p1AnalogY = 0f; surfaceRef?.p2AnalogX = 0f; surfaceRef?.p2AnalogY = 0f }) { Text(if (localTwoPlayer) "2 jogadores" else "Solo", color = if (localTwoPlayer) Color(0xFF34D399) else Color.White, fontSize = 11.sp) }
                         }
                         Spacer(Modifier.height(9.dp))
                         Box(Modifier.fillMaxWidth().weight(1f).background(Color.Black, RoundedCornerShape(12.dp)), contentAlignment = Alignment.Center) {
                             if (rom == null) {
                                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                                     Text("FamiLink", color = Color(0xFF2A3140), fontSize = 32.sp, fontWeight = FontWeight.Bold)
-                                    Spacer(Modifier.height(6.dp)); Text("Escolha uma ROM para começar", color = Muted, fontSize = 12.sp)
+                                    Spacer(Modifier.height(6.dp)); Text("Escolha um ZIP na Biblioteca para começar", color = Muted, fontSize = 12.sp)
                                 }
                             } else AndroidView(factory = { c -> EmulatorSurfaceView(c).also { it.targetFps = targetFps; surfaceRef = it } }, update = { it.targetFps = targetFps }, modifier = Modifier.fillMaxSize())
                         }
@@ -374,8 +327,8 @@ class MainActivity : ComponentActivity() {
                         }
                     }
                     "Núcleos" -> Column(Modifier.fillMaxSize().padding(12.dp)) {
-                        Text("Núcleos & ROMs · ${CoreRegistry.cores.size} sistemas", color = Color.White, fontSize = 19.sp, fontWeight = FontWeight.Bold)
-                        Text("Toque num sistema e escolha ‘Abrir ROM’ para usar esse núcleo.", color = Muted, fontSize = 11.sp)
+                        Text("Escolher sistema · ${CoreRegistry.cores.size} sistemas", color = Color.White, fontSize = 19.sp, fontWeight = FontWeight.Bold)
+                        Text("Escolha o sistema e importe o ZIP correspondente para a biblioteca.", color = Muted, fontSize = 11.sp)
                         selectedCoreId?.let { id ->
                             val selected = CoreRegistry.cores.firstOrNull { it.id == id }
                             if (selected != null) Text("Selecionado: ${selected.consoleName}", color = Color(0xFF34D399), fontSize = 11.sp, modifier = Modifier.padding(top = 5.dp))
@@ -394,80 +347,48 @@ class MainActivity : ComponentActivity() {
                                         }
                                         Button(onClick = {
                                             selectedCoreId = core.id
-                                            pickerOrigin = "Jogar"
-                                            tab = "Jogar"
-                                            romPicker.launch(arrayOf("*/*"))
+                                            tab = "Biblioteca"
+                                            romPicker.launch(arrayOf("application/zip", "application/x-zip-compressed", "application/octet-stream"))
                                         }, colors = ButtonDefaults.buttonColors(containerColor = if (isSelected) Color(0xFF059669) else Accent), contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp)) {
-                                            Text(if (isSelected) "Abrir ROM" else "Usar", fontSize = 11.sp)
+                                            Text(if (isSelected) "Importar ZIP" else "Selecionar", fontSize = 11.sp)
                                         }
                                     }
                                 }
                             }
                         }
                     }
-                    "Online", "Local" -> Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp)) {
-                        Text(if (tab == "Online") "Netplay Online" else "Netplay Local", color = Color.White, fontSize = 21.sp, fontWeight = FontWeight.Bold)
-                        Text(if (tab == "Online") "Entre com sua conta para criar ou localizar uma sala." else "Modo local para dois jogadores no mesmo aparelho.", color = Muted, fontSize = 12.sp)
-                        Spacer(Modifier.height(14.dp))
-                        Button(onClick = { pickerOrigin = tab; romPicker.launch(arrayOf("*/*")) }, enabled = !busy, colors = ButtonDefaults.buttonColors(containerColor = Accent)) {
-                            Text(if (rom == null) "Escolher ROM neste aparelho" else "Trocar ROM (${rom?.fileName})", maxLines = 1, fontSize = 12.sp)
+                    "Biblioteca" -> Column(Modifier.fillMaxSize().padding(12.dp)) {
+                        Text("Biblioteca de jogos", color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+                        Text("ZIPs guardados para abrir como em um launcher.", color = Muted, fontSize = 11.sp)
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(top=8.dp, bottom=8.dp)) {
+                            Button(onClick = { if (selectedCoreId == null) { status = "Escolha o sistema em Núcleos antes de importar o ZIP."; tab = "Núcleos" } else romPicker.launch(arrayOf("application/zip", "application/x-zip-compressed", "application/octet-stream")) }, enabled = !busy, colors = ButtonDefaults.buttonColors(containerColor = Accent)) { Text("Adicionar ZIP") }
+                            OutlinedButton(onClick = { library = RomLibrary.list(ctx); user?.uid?.let { uid -> cloudStatus = "Sincronizando biblioteca…"; CloudRomSync.sync(NativeFirebase.initialize(ctx), ctx, db, uid) { msg -> runOnUiThread { cloudStatus = msg; library = RomLibrary.list(ctx) } } } ?: run { cloudStatus = "Entre com sua conta de e-mail para sincronizar." } }) { Text("Sincronizar conta") }
                         }
-                        if (rom != null) Text("ROM carregada neste aparelho: ${rom?.fileName} · ${rom?.region}", color = Color(0xFF34D399), fontSize = 11.sp, modifier = Modifier.padding(top=7.dp))
-                        if (tab == "Online") Text("Só P1 precisa carregar a ROM. P2 recebe apenas o vídeo e o áudio do jogo; a tela do Android e as notificações não são transmitidas.", color = Muted, fontSize = 11.sp, modifier = Modifier.padding(top=7.dp))
-                        if (tab == "Local") {
-                            Button(onClick = { if (rom == null) roomError = "Escolha a ROM neste aparelho primeiro." else { tab = "Jogar"; localTwoPlayer = true; localP2 = true } }, enabled = rom != null, colors = ButtonDefaults.buttonColors(containerColor = Accent), modifier=Modifier.padding(top=10.dp)) { Text("Abrir jogo em modo local 2P") }
-                            Text("Escolha a ROM neste aparelho e depois abra o jogo local.", color = Muted, fontSize = 11.sp, modifier = Modifier.padding(top=8.dp))
-                        } else if (user == null) {
-                            Card(colors = CardDefaults.cardColors(containerColor = Panel)) { Column(Modifier.padding(16.dp)) { Text("Conta necessária", color = Color.White, fontWeight = FontWeight.Bold); Text("Crie sua conta ou entre com e-mail e senha. Você também pode recuperar a senha por e-mail.", color = Muted, fontSize = 12.sp, modifier = Modifier.padding(vertical=8.dp)); Button(onClick = { authMode="login"; authDialog=true }, colors=ButtonDefaults.buttonColors(containerColor=Accent)) { Text("Entrar / criar conta") } } }
-                        } else {
-                            Text("Conectado como ${user?.email}", color = Color(0xFF34D399), fontSize = 11.sp)
-                            Text("ROM atual: ${rom?.fileName ?: "nenhuma carregada"}", color = Muted, fontSize = 11.sp, modifier = Modifier.padding(top=8.dp))
-                            Spacer(Modifier.height(12.dp))
-                            Button(enabled = !busy && rom != null, onClick = {
-                                busy = true; roomError = ""
-                                Thread {
-                                    val code = (1..6).map { "ABCDEFGHJKLMNPQRSTUVWXYZ23456789".random() }.joinToString("")
-                                            val active = rom
-                                    if (active == null) { runOnUiThread { busy=false; roomError="P1 precisa carregar a ROM antes de criar a sala." }; return@Thread }
-                                    val payload = hashMapOf<String, Any>("roomCode" to code, "hostUid" to (user?.uid ?: ""), "hostName" to (user?.email?.substringBefore("@") ?: "Host P1"), "guestUid" to "", "guestName" to "", "mode" to "remote-stream", "consoleId" to active.coreSpec.id, "romName" to active.fileName, "romHash" to active.sha256, "romRegion" to active.region.name, "romSize" to active.bytes.size, "guestRomHash" to "", "guestRomRegion" to "NONE", "guestAccessStatus" to "empty", "streamOffer" to mapOf("sdp" to "", "type" to "offer"), "streamAnswer" to mapOf("sdp" to "", "type" to "answer"), "streamHostCandidates" to emptyList<Map<String, Any>>(), "streamGuestCandidates" to emptyList<Map<String, Any>>(), "status" to "waiting", "inputDelay" to 1, "createdAt" to FieldValue.serverTimestamp(), "updatedAt" to FieldValue.serverTimestamp())
-                                    db.collection("rooms").document(code).set(payload).addOnSuccessListener { roomCode=code;busy=false }.addOnFailureListener { e->roomError=e.localizedMessage ?: "Erro ao criar sala";busy=false }
-                                }.start()
-                            }, colors = ButtonDefaults.buttonColors(containerColor = Accent)) { Text(if (busy) "Aguarde…" else "Criar sala") }
-                            Spacer(Modifier.height(10.dp))
-                            OutlinedTextField(roomCode, { roomCode=it.uppercase().take(6) }, label={Text("Código da sala")}, singleLine=true)
-                            Button(enabled = !busy && roomCode.length == 6, onClick = {
-                                val code = roomCode.trim(); val active = rom; busy=true; roomError=""
-                                db.collection("rooms").document(code).get().addOnSuccessListener { doc ->
-                                    if (!doc.exists()) { roomError="Sala não encontrada."; busy=false }
-                                    else {
-                                        if (doc.getString("hostUid") == user?.uid) { roomError="P1 não pode entrar na própria sala como P2."; busy=false }
-                                        else if (doc.getString("guestUid").orEmpty().isNotBlank()) { roomError="Essa sala já tem um P2 conectado."; busy=false }
-                                        else {
-                                            val updates = hashMapOf<String, Any>("guestUid" to (user?.uid ?: ""), "guestName" to (user?.email?.substringBefore("@") ?: "P2"), "guestRomHash" to (active?.sha256 ?: ""), "guestRomRegion" to (active?.region?.name ?: "NONE"), "guestAccessStatus" to "pending", "updatedAt" to FieldValue.serverTimestamp())
-                                            doc.reference.update(updates).addOnSuccessListener { busy=false; roomError="P2 entrou sem baixar a ROM. Aguarde P1 liberar o stream de jogo." }.addOnFailureListener { e->roomError=e.localizedMessage ?: "Falha ao entrar";busy=false }
+                        Text(cloudStatus, color = Muted, fontSize = 10.sp)
+                        if (user == null) Text("Entre com a mesma conta de e-mail para vincular a biblioteca.", color = Color(0xFFFFC857), fontSize = 11.sp, modifier=Modifier.padding(vertical=6.dp))
+                        if (library.isEmpty()) {
+                            Text("Ainda não há jogos. Vá em Núcleos, escolha um sistema e adicione um ZIP.", color=Muted, fontSize=12.sp, modifier=Modifier.padding(top=12.dp))
+                        } else LazyColumn(verticalArrangement=Arrangement.spacedBy(8.dp), modifier=Modifier.padding(top=8.dp)) {
+                            items(library) { item ->
+                                Card(colors=CardDefaults.cardColors(containerColor=Panel)) {
+                                    Row(Modifier.fillMaxWidth().padding(12.dp), verticalAlignment=Alignment.CenterVertically) {
+                                        Column(Modifier.weight(1f)) {
+                                            Text(item.archiveName, color=Color.White, fontWeight=FontWeight.SemiBold, maxLines=1)
+                                            Text(CoreRegistry.cores.firstOrNull { it.id == item.coreId }?.consoleName ?: item.coreId, color=Muted, fontSize=10.sp)
                                         }
+                                        Button(onClick={
+                                            Thread {
+                                                val bytes = runCatching { item.file.readBytes() }.getOrElse { byteArrayOf() }
+                                                runOnUiThread { if (bytes.isEmpty()) status="ZIP ausente ou vazio" else loadArchive(item.archiveName, bytes, item.coreId, false) }
+                                            }.start()
+                                        }, enabled=!busy, colors=ButtonDefaults.buttonColors(containerColor=Accent)) { Text("Jogar") }
+                                        TextButton(onClick={ RomLibrary.delete(ctx, item.id); library=RomLibrary.list(ctx) }) { Text("Excluir", color=Muted) }
                                     }
-                                }.addOnFailureListener { e->roomError=e.localizedMessage ?: "Falha ao procurar sala";busy=false }
-                            }) { Text("Entrar na sala") }
-                            if (roomCode.isNotBlank() && roomInfo != null) {
-                                Spacer(Modifier.height(12.dp)); Card(colors = CardDefaults.cardColors(containerColor = Panel)) { Column(Modifier.padding(14.dp)) {
-                                    Text("Sala $roomCode · ${roomInfo?.get("status") ?: ""}", color=Color.White, fontWeight=FontWeight.Bold)
-                                    Text("ROM: ${roomInfo?.get("romName") ?: ""} · ${roomInfo?.get("romRegion") ?: ""}", color=Muted, fontSize=11.sp)
-                                    Text("P2: ${roomInfo?.get("guestName")?.takeIf { it.toString().isNotBlank() } ?: "aguardando"} · ${roomInfo?.get("guestAccessStatus") ?: ""}", color=Muted, fontSize=11.sp)
-                                    if (roomInfo?.get("hostUid") != user?.uid && roomInfo?.get("guestUid") == user?.uid) Text(if (roomInfo?.get("guestAccessStatus") == "approved") "P2 recebe jogo e áudio do P1 — sem ROM local" else "Aguardando P1 liberar a transmissão…", color=Color(0xFF34D399), fontSize=11.sp)
-                                    if (roomInfo?.get("hostUid") == user?.uid && roomInfo?.get("guestUid").toString().isNotBlank()) {
-                                        Button(enabled = roomInfo?.get("guestAccessStatus") != "approved", onClick = {
-                                            db.collection("rooms").document(roomCode).update(mapOf("guestAccessStatus" to "approved", "status" to "playing", "updatedAt" to FieldValue.serverTimestamp()))
-                                                .addOnSuccessListener { roomError = "P2 liberado. Abrindo stream somente do jogo e do áudio." }
-                                                .addOnFailureListener { e -> roomError = e.localizedMessage ?: "Falha ao liberar P2" }
-                                        }, colors=ButtonDefaults.buttonColors(containerColor=Color(0xFF059669))) { Text(if (roomInfo?.get("guestAccessStatus") == "approved") "P2 liberado" else "Liberar P2") }
-                                    }
-                                    Text("A transmissão envia apenas quadros do emulador e PCM do núcleo; não usa captura de tela, microfone nem notificações. O controle remoto de P2 ainda não está ligado.", color=Color(0xFFFFC857), fontSize=10.sp, modifier=Modifier.padding(top=6.dp))
-                                } }
+                                }
                             }
                         }
-                        if (roomError.isNotBlank()) Text(roomError, color=Color(0xFFF87171), fontSize=11.sp, modifier=Modifier.padding(top=8.dp))
                     }
+
                 }
             }
         }

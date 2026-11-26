@@ -13,8 +13,8 @@ android {
         minSdk = 23
         // Android 6.0 Marshmallow is API 23; keep target conservative for legacy behavior.
         targetSdk = 28
-        versionCode = 14
-        versionName = "1.0.14"
+        versionCode = 19
+        versionName = "1.0.19"
 
         ndk {
             abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64")
@@ -49,6 +49,5 @@ dependencies {
     implementation(platform("com.google.firebase:firebase-bom:33.5.1"))
     implementation("com.google.firebase:firebase-auth")
     implementation("com.google.firebase:firebase-firestore")
-    // Android WebRTC data-channel transport; Android 6+ compatible.
-    implementation("com.infobip:google-webrtc:1.0.45036")
+    implementation("com.google.firebase:firebase-storage")
 }
