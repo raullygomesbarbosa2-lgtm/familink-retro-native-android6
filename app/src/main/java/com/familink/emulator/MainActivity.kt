@@ -376,7 +376,7 @@ private fun AnalogStick(onMove: (Float, Float) -> Unit) {
         modifier = Modifier
             .size(118.dp)
             .pointerInput(Unit) {
-                val radius = size.minDimension * 0.34f
+                val radius = minOf(size.width.toFloat(), size.height.toFloat()) * 0.34f
                 fun update(position: Offset) {
                     val center = Offset(size.width / 2f, size.height / 2f)
                     var dx = position.x - center.x
@@ -395,7 +395,7 @@ private fun AnalogStick(onMove: (Float, Float) -> Unit) {
             }
     ) {
         val center = Offset(size.width / 2f, size.height / 2f)
-        val outer = size.minDimension * 0.45f
+        val outer = minOf(size.width, size.height) * 0.45f
         drawCircle(color = Color(0xFF202838), radius = outer, center = center)
         drawCircle(color = Color(0xFF64748B), radius = outer, center = center, style = Stroke(width = 2.dp.toPx()))
         drawCircle(color = Color(0xFF39465C), radius = outer * 0.55f, center = center, style = Stroke(width = 1.dp.toPx()))
