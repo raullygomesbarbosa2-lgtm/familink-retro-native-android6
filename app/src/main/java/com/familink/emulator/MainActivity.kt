@@ -158,6 +158,17 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private fun writeLaunchFile(context: Context, rom: VerifiedRom): File {
+        val extension = rom.launchFileName.substringAfterLast('.', "zip").lowercase().filter { it.isLetterOrDigit() }.ifBlank { "zip" }
+        val directory = File(context.filesDir, "active-game").apply { mkdirs() }
+        val destination = File(directory, "game.$extension")
+        val temporary = File(directory, "game.$extension.tmp")
+        temporary.outputStream().use { it.write(rom.launchBytes) }
+        if (destination.exists()) destination.delete()
+        check(temporary.renameTo(destination)) { "Não consegui preparar o arquivo para o núcleo." }
+        return destination
+    }
+
     @Composable
     private fun FamiLinkApp() {
         val ctx = LocalContext.current
@@ -198,26 +209,28 @@ class MainActivity : ComponentActivity() {
             Thread {
                 try {
                     val loaded = RomVerifier.loadZipBytes(archiveName, archiveBytes, coreId)
-                    if (saveToLibrary) RomLibrary.import(ctx, archiveName, loaded.coreSpec.id, archiveBytes)
                     var activeCoreSpec = loaded.coreSpec
                     var gameAccepted = false
                     var primaryCoreError = ""
                     NativeCoreBridge.nativeUnload()
                     try {
                         val primaryFile = obtainCoreFile(ctx, activeCoreSpec)
-                        gameAccepted = NativeCoreBridge.nativeLoadCore(primaryFile.absolutePath) && NativeCoreBridge.nativeLoadRomBytes(loaded.fileName, loaded.bytes)
+                        val launchFile = writeLaunchFile(ctx, loaded)
+                        gameAccepted = NativeCoreBridge.nativeLoadCore(primaryFile.absolutePath) && NativeCoreBridge.nativeLoadRomFile(launchFile.absolutePath)
                     } catch (e: Exception) { primaryCoreError = e.message ?: "falha no núcleo" }
                     if (!gameAccepted && loaded.coreSpec.id == "megadrive") {
                         NativeCoreBridge.nativeUnload()
                         activeCoreSpec = CoreRegistry.cores.first { it.id == "sega32x" }
                         val fallbackFile = obtainCoreFile(ctx, activeCoreSpec)
-                        gameAccepted = NativeCoreBridge.nativeLoadCore(fallbackFile.absolutePath) && NativeCoreBridge.nativeLoadRomBytes(loaded.fileName, loaded.bytes)
+                        val launchFile = writeLaunchFile(ctx, loaded)
+                        gameAccepted = NativeCoreBridge.nativeLoadCore(fallbackFile.absolutePath) && NativeCoreBridge.nativeLoadRomFile(launchFile.absolutePath)
                     }
                     check(gameAccepted) {
                         if (loaded.coreSpec.id == "megadrive") "Genesis Plus GX falhou${if (primaryCoreError.isNotBlank()) ": $primaryCoreError" else ""}; PicoDrive também não abriu a ROM do ZIP."
                         else "O núcleo ${loaded.coreSpec.consoleName} não aceitou a ROM dentro do ZIP."
                     }
                     val usedFallback = activeCoreSpec.id == "sega32x"
+                    if (saveToLibrary) RomLibrary.import(ctx, archiveName, loaded.coreSpec.id, archiveBytes)
                     runOnUiThread {
                         rom = loaded
                         status = "${loaded.coreSpec.consoleName}${if (usedFallback) " (PicoDrive)" else ""} · ${loaded.fileName}"

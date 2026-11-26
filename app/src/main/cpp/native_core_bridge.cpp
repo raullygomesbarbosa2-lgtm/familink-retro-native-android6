@@ -3,6 +3,7 @@
 #include <dlfcn.h>
 #include <cstdint>
 #include <cstring>
+#include <string>
 #include <vector>
 
 struct retro_game_info {
@@ -39,6 +40,7 @@ static unsigned g_height = 240;
 static unsigned g_pixel_format = 2; // Libretro: 0=0RGB1555, 1=XRGB8888, 2=RGB565
 static double g_audio_sample_rate = 48000.0;
 static std::vector<uint8_t> g_rom_bytes;
+static std::string g_game_path;
 
 struct retro_game_geometry { unsigned base_width, base_height, max_width, max_height; float aspect_ratio; };
 struct retro_system_timing { double fps, sample_rate; };
@@ -171,10 +173,11 @@ extern "C" JNIEXPORT jboolean JNICALL
 Java_com_familink_emulator_NativeCoreBridge_nativeLoadRomBytes(JNIEnv* env, jobject, jstring romPath, jbyteArray bytes) {
     if (!g_retro_load_game) return JNI_FALSE;
     const char* path = env->GetStringUTFChars(romPath, nullptr);
+    g_game_path.assign(path);
     jsize len = env->GetArrayLength(bytes);
     jbyte* raw = env->GetByteArrayElements(bytes, nullptr);
     g_rom_bytes.assign(reinterpret_cast<uint8_t*>(raw), reinterpret_cast<uint8_t*>(raw) + len);
-    retro_game_info info { path, g_rom_bytes.data(), static_cast<size_t>(len), nullptr };
+    retro_game_info info { g_game_path.c_str(), g_rom_bytes.data(), static_cast<size_t>(len), nullptr };
     bool ok = g_retro_load_game(&info);
     if (ok && g_retro_get_system_av_info) {
         retro_system_av_info info{};
@@ -184,6 +187,22 @@ Java_com_familink_emulator_NativeCoreBridge_nativeLoadRomBytes(JNIEnv* env, jobj
     }
     env->ReleaseByteArrayElements(bytes, raw, JNI_ABORT);
     env->ReleaseStringUTFChars(romPath, path);
+    return ok ? JNI_TRUE : JNI_FALSE;
+}
+
+extern "C" JNIEXPORT jboolean JNICALL
+Java_com_familink_emulator_NativeCoreBridge_nativeLoadRomFile(JNIEnv* env, jobject, jstring absolutePath) {
+    if (!g_retro_load_game) return JNI_FALSE;
+    const char* path = env->GetStringUTFChars(absolutePath, nullptr);
+    g_game_path.assign(path);
+    retro_game_info info { g_game_path.c_str(), nullptr, 0, nullptr };
+    bool ok = g_retro_load_game(&info);
+    if (ok && g_retro_get_system_av_info) {
+        retro_system_av_info av{};
+        g_retro_get_system_av_info(&av);
+        if (av.timing.sample_rate >= 8000.0 && av.timing.sample_rate <= 192000.0) g_audio_sample_rate = av.timing.sample_rate;
+    }
+    env->ReleaseStringUTFChars(absolutePath, path);
     return ok ? JNI_TRUE : JNI_FALSE;
 }
 
@@ -255,7 +274,7 @@ extern "C" JNIEXPORT void JNICALL
 Java_com_familink_emulator_NativeCoreBridge_nativeUnload(JNIEnv*, jobject) {
     if (g_retro_unload_game) g_retro_unload_game();
     if (g_retro_deinit) g_retro_deinit();
-    g_rom_bytes.clear(); g_pixels.clear(); g_audio_ring.clear();
+    g_rom_bytes.clear(); g_game_path.clear(); g_pixels.clear(); g_audio_ring.clear();
     if (g_core_handle) { dlclose(g_core_handle); g_core_handle = nullptr; }
     g_retro_init = nullptr; g_retro_deinit = nullptr; g_retro_load_game = nullptr;
     g_retro_unload_game = nullptr; g_retro_run = nullptr; g_retro_get_system_av_info = nullptr;

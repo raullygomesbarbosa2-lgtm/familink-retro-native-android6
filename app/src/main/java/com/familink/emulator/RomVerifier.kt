@@ -14,7 +14,9 @@ data class VerifiedRom(
     val sha256: String,
     val bytes: ByteArray,
     val archiveName: String = fileName,
-    val archiveBytes: ByteArray = bytes
+    val archiveBytes: ByteArray = bytes,
+    val launchBytes: ByteArray = bytes,
+    val launchFileName: String = fileName
 )
 
 object RomVerifier {
@@ -30,32 +32,84 @@ object RomVerifier {
         if (archiveBytes.isEmpty()) throw IllegalArgumentException("O arquivo ZIP está vazio.")
         val core = CoreRegistry.cores.firstOrNull { it.id == selectedCoreId }
             ?: throw IllegalArgumentException("Escolha primeiro o sistema/núcleo na aba Núcleos.")
-        val entries = mutableListOf<Pair<String, ByteArray>>()
-        java.util.zip.ZipInputStream(archiveBytes.inputStream()).use { zip ->
+        val isArcadeSet = core.id.startsWith("arcade") || core.id == "neogeo"
+        var archiveEntryCount = 0
+        var archiveHasPayload = false
+        val entries = try {
+            java.util.zip.ZipInputStream(archiveBytes.inputStream()).use { zip ->
+                val found = mutableListOf<Pair<String, ByteArray>>()
+                var entry = zip.nextEntry
+                while (entry != null) {
+                    if (!entry.isDirectory) {
+                        archiveEntryCount++
+                        if (archiveEntryCount > 4096) throw IllegalArgumentException("O ZIP tem itens demais; escolha um conjunto de ROM Arcade válido.")
+                        if (isArcadeSet) {
+                            // Arcade members can use chip numbers without extensions; the arcade core reads the intact ZIP path.
+                            if (entry.size != 0L) archiveHasPayload = true
+                            if (entry.size > 128L * 1024L * 1024L) throw IllegalArgumentException("Uma ROM dentro do ZIP passa de 128 MB; não vou abrir um arquivo que pode travar o celular.")
+                            zip.closeEntry()
+                        } else {
+                            val memberName = entry.name.substringAfterLast('/')
+                            val ext = "." + memberName.substringAfterLast('.', "").lowercase()
+                            if (ext == ".zip" && core.id == "megadrive") {
+                                val nested = zip.readBytes()
+                                if (nested.size > 128 * 1024 * 1024) throw IllegalArgumentException("O ZIP interno é grande demais para abrir com segurança.")
+                                found += extractNested(nested, core, 1)
+                            } else if (core.extensions.any { it != ".zip" && it.equals(ext, true) }) {
+                                val data = zip.readBytes()
+                                if (data.isNotEmpty()) found += memberName to data
+                            }
+                            zip.closeEntry()
+                        }
+                    }
+                    entry = zip.nextEntry
+                }
+                found
+            }
+        } catch (e: Exception) {
+            throw IllegalArgumentException("O ZIP está corrompido ou não pôde ser lido: ${e.localizedMessage ?: "arquivo inválido"}")
+        }
+        if (archiveEntryCount == 0) throw IllegalArgumentException("O ZIP não contém arquivos de jogo.")
+        if (isArcadeSet && !archiveHasPayload) throw IllegalArgumentException("Esse ZIP não parece conter ROMs Arcade. Use o ZIP do jogo/ROMset compatível com o núcleo selecionado.")
+        if (!isArcadeSet && entries.isEmpty()) throw IllegalArgumentException("Não achei dentro do ZIP uma ROM ${core.consoleName} reconhecível. Ele precisa conter ${core.extensions.filter { it != ".zip" }.joinToString()} (também aceito ZIP interno para Mega Drive).")
+        val (gameName, gameBytes) = if (isArcadeSet) {
+            archiveName to archiveBytes
+        } else {
+            entries.maxByOrNull { it.second.size } ?: throw IllegalArgumentException("A ROM compatível dentro do ZIP não foi encontrada.")
+        } 
+        if (gameBytes.isEmpty()) throw IllegalArgumentException("A ROM selecionada está vazia.")
+        val launchBytes = if (isArcadeSet) archiveBytes else gameBytes
+        val launchFileName = if (isArcadeSet) archiveName else gameName
+        val sha256 = MessageDigest.getInstance("SHA-256").digest(gameBytes).joinToString("") { "%02x".format(it) }
+        val region = detectRegion("$archiveName $gameName", gameBytes, core.id)
+        return VerifiedRom(gameName, core, region, sha256, gameBytes, archiveName, archiveBytes, launchBytes, launchFileName)
+    }
+
+    private fun extractNested(zipBytes: ByteArray, core: AndroidCoreSpec, depth: Int): List<Pair<String, ByteArray>> {
+        if (depth > 2) return emptyList()
+        val result = mutableListOf<Pair<String, ByteArray>>()
+        java.util.zip.ZipInputStream(zipBytes.inputStream()).use { zip ->
             var entry = zip.nextEntry
+            var count = 0
             while (entry != null) {
-                if (!entry.isDirectory && entry.size != 0L) {
+                if (!entry.isDirectory) {
+                    count++
+                    if (count > 4096) throw IllegalArgumentException("O ZIP interno contém itens demais.")
                     val name = entry.name.substringAfterLast('/')
                     val ext = "." + name.substringAfterLast('.', "").lowercase()
-                    if (core.id.startsWith("arcade") || core.id == "arcade" || core.id == "neogeo") {
-                        // Arcade cores consume the intact ZIP set as one libretro game.
-                        break
+                    if (ext == ".zip" && core.id == "megadrive" && depth < 2) {
+                        val nested = zip.readBytes()
+                        if (nested.size <= 128 * 1024 * 1024) result += extractNested(nested, core, depth + 1)
+                    } else if (core.extensions.any { it != ".zip" && it.equals(ext, true) }) {
+                        val bytes = zip.readBytes()
+                        if (bytes.isNotEmpty() && bytes.size <= 128 * 1024 * 1024) result += name to bytes
                     }
-                    if (core.extensions.any { it.equals(ext, true) }) entries += name to zip.readBytes()
+                    zip.closeEntry()
                 }
-                zip.closeEntry()
                 entry = zip.nextEntry
             }
         }
-        val (gameName, gameBytes) = if (core.id.startsWith("arcade") || core.id == "arcade" || core.id == "neogeo") {
-            archiveName to archiveBytes
-        } else {
-            entries.maxByOrNull { it.second.size } ?: throw IllegalArgumentException("Não achei dentro do ZIP um arquivo compatível com ${core.consoleName}. Formatos esperados: ${core.extensions.joinToString()}.")
-        }
-        if (gameBytes.isEmpty()) throw IllegalArgumentException("A ROM dentro do ZIP está vazia.")
-        val sha256 = MessageDigest.getInstance("SHA-256").digest(gameBytes).joinToString("") { "%02x".format(it) }
-        val region = detectRegion("$archiveName $gameName", gameBytes, core.id)
-        return VerifiedRom(gameName, core, region, sha256, gameBytes, archiveName, archiveBytes)
+        return result
     }
 
     fun validateMatch(hostHash: String, hostRegion: RomRegion, guest: VerifiedRom): Pair<Boolean, String> {

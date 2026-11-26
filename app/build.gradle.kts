@@ -10,11 +10,11 @@ android {
 
     defaultConfig {
         applicationId = "com.familink.emulator"
-        minSdk = 23
-        // Android 6.0 Marshmallow is API 23; keep target conservative for legacy behavior.
-        targetSdk = 28
-        versionCode = 20
-        versionName = "1.0.20"
+        // This variant targets Android 10 (API 29) and newer, per the supported phone range.
+        minSdk = 29
+        targetSdk = 35
+        versionCode = 22
+        versionName = "1.0.22"
 
         ndk {
             abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64")
