@@ -5,6 +5,7 @@ import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
+import android.graphics.Rect
 import android.graphics.RectF
 import android.media.AudioAttributes
 import android.media.AudioFormat
@@ -21,7 +22,7 @@ class EmulatorSurfaceView(context: Context) : View(context) {
     private val audio = ShortArray(4096)
     private val paint = Paint(Paint.FILTER_BITMAP_FLAG)
     private val target = RectF()
-    private val source = RectF()
+    private val source = Rect()
 
     @Volatile var p1Mask: Int = 0
     @Volatile var p2Mask: Int = 0
@@ -96,11 +97,11 @@ class EmulatorSurfaceView(context: Context) : View(context) {
             if (frameRatio > viewRatio) {
                 val cropWidth = bitmap.height * viewRatio
                 val left = (bitmap.width - cropWidth) / 2f
-                source.set(left, 0f, left + cropWidth, bitmap.height.toFloat())
+                source.set(left.toInt().coerceIn(0, bitmap.width - 1), 0, (left + cropWidth).toInt().coerceIn(1, bitmap.width), bitmap.height)
             } else {
                 val cropHeight = bitmap.width / viewRatio
                 val top = (bitmap.height - cropHeight) / 2f
-                source.set(0f, top, bitmap.width.toFloat(), top + cropHeight)
+                source.set(0, top.toInt().coerceIn(0, bitmap.height - 1), bitmap.width, (top + cropHeight).toInt().coerceIn(1, bitmap.height))
             }
             target.set(0f, 0f, width.toFloat(), height.toFloat())
             canvas.drawBitmap(bitmap, source, target, paint)
